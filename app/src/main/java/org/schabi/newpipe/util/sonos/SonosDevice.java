@@ -79,6 +79,12 @@ public final class SonosDevice implements Serializable {
                         + "<NextURIMetaData>" + xmlEscape(didl) + "</NextURIMetaData>");
     }
 
+    /** Clears a previously queued next track (empty NextURI). */
+    public void clearNext() throws IOException {
+        soap("AVTransport", AV_TRANSPORT_URN, "SetNextAVTransportURI",
+                "<NextURI></NextURI><NextURIMetaData></NextURIMetaData>");
+    }
+
     /** @return URI of the track currently loaded on the speaker ("" if none). */
     public String getTrackUri() throws IOException {
         final String body = soap("AVTransport", AV_TRANSPORT_URN, "GetPositionInfo", "");

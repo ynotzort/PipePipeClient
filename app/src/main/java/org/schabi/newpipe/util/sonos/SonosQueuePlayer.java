@@ -10,6 +10,7 @@ import android.widget.Toast;
 import androidx.annotation.Nullable;
 
 import org.schabi.newpipe.R;
+import org.schabi.newpipe.extractor.stream.StreamInfo;
 import org.schabi.newpipe.player.playqueue.PlayQueueItem;
 import org.schabi.newpipe.util.ExtractorHelper;
 
@@ -142,7 +143,16 @@ public final class SonosQueuePlayer {
 
     /** @return index of the item currently playing, or -1 if no queue session. */
     public static int queueIndex() {
-        return session == null ? -1 : session.currentIndex;
+        return session == null ? -1 : session.items.indexOf(session.currentItem);
+    }
+
+    /** Bumped on every queue edit; the control screen rebuilds its list on change. */
+    public static int queueVersion() {
+        return session == null ? -1 : session.version;
+    }
+
+    public static boolean hasSession() {
+        return session != null;
     }
 
     /** Jumps the active queue session to the given item (no-op without a session). */
@@ -154,32 +164,71 @@ public final class SonosQueuePlayer {
 
     public static void next() {
         if (session != null) {
-            session.skipTo(session.currentIndex + 1);
+            session.skipTo(queueIndex() + 1);
         }
     }
 
     public static void previous() {
         if (session != null) {
-            session.skipTo(session.currentIndex - 1);
+            session.skipTo(queueIndex() - 1);
+        }
+    }
+
+    /** Appends a stream to the running queue, or starts a new queue playing it. */
+    public static void enqueue(final Activity activity, final StreamInfo info) {
+        final Item item = new StreamItem(info.getServiceId(), info.getUrl(),
+                info.getName(), info.getDuration());
+        if (session == null) {
+            final List<Item> single = new ArrayList<>();
+            single.add(item);
+            playItems(activity, single, null);
+        } else {
+            session.add(item);
+            Toast.makeText(activity.getApplicationContext(),
+                    R.string.sonos_added_to_queue, Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /** Removes the queue item at {@code index}; false if it's the playing one. */
+    public static boolean removeAt(final int index) {
+        return session != null && session.removeAt(index);
+    }
+
+    /** Moves the queue item at {@code from} to position {@code to}. */
+    public static void move(final int from, final int to) {
+        if (session != null) {
+            session.move(from, to);
         }
     }
 
     /** A PipePipe stream: extract StreamInfo, then direct URL or download+serve. */
     private static final class StreamItem implements Item {
-        private final PlayQueueItem queueItem;
+        private final int serviceId;
+        private final String url;
+        private final String title;
+        private final long durationSeconds;
 
         StreamItem(final PlayQueueItem queueItem) {
-            this.queueItem = queueItem;
+            this(queueItem.getServiceId(), queueItem.getUrl(),
+                    queueItem.getTitle(), queueItem.getDuration());
+        }
+
+        StreamItem(final int serviceId, final String url, final String title,
+                   final long durationSeconds) {
+            this.serviceId = serviceId;
+            this.url = url;
+            this.title = title;
+            this.durationSeconds = durationSeconds;
         }
 
         @Override
         public String title() {
-            return queueItem.getTitle();
+            return title;
         }
 
         @Override
         public long durationSeconds() {
-            return queueItem.getDuration();
+            return durationSeconds;
         }
 
         @Override
@@ -187,7 +236,7 @@ public final class SonosQueuePlayer {
                                   final Consumer<Prepared> onReady,
                                   final Consumer<Throwable> onError) {
             return ExtractorHelper
-                    .getStreamInfo(queueItem.getServiceId(), queueItem.getUrl(), false)
+                    .getStreamInfo(serviceId, url, false)
                     .subscribeOn(Schedulers.io())
                     .observeOn(AndroidSchedulers.mainThread())
                     .subscribe(info -> SonosPlayer.resolve(appContext, info, quiet,
@@ -282,33 +331,40 @@ public final class SonosQueuePlayer {
     }
 
     private interface OnPrepared {
-        void ready(int index, Prepared prepared);
+        void ready(Item item, Prepared prepared);
     }
 
     private static final class Session {
         private final Context appContext;
         private final SonosDevice device;
+        /** Owned mutable copy; edited in place by add/removeAt/move. */
         private final List<Item> items;
         private final CompositeDisposable disposables = new CompositeDisposable();
 
-        private int currentIndex;
+        // current/next are tracked by Item reference, not index — queue edits
+        // shift indices under a playing session
+        private Item currentItem;
         private String currentUrl;
+        private Item nextItem;
         private String nextUrl;
         private Prepared nextPrepared;
-        private int nextIndex;
+        /** Last item a queueNext was issued for (dedups syncNext re-queues). */
+        private Item wantedNext;
         private int stoppedPolls;
         /** Bumped on skip; stale prepare callbacks (e.g. a superseded download) bail out. */
         private int generation;
+        /** Bumped on every queue edit; the control screen rebuilds on change. */
+        private int version;
 
         Session(final Context appContext, final SonosDevice device, final List<Item> items) {
             this.appContext = appContext;
             this.device = device;
-            this.items = items;
+            this.items = new ArrayList<>(items);
         }
 
         void start(final Activity activity) {
-            prepare(0, false, (index, prepared) -> {
-                currentIndex = index;
+            prepare(0, false, (item, prepared) -> {
+                currentItem = item;
                 currentUrl = prepared.url;
                 SonosPlayer.persistLast(appContext, device, prepared.title,
                         prepared.durationSeconds);
@@ -323,7 +379,7 @@ public final class SonosQueuePlayer {
                         activity.startActivity(
                                 new Intent(activity, SonosControlActivity.class));
                     }
-                    queueNext(index + 1);
+                    queueNext(items.indexOf(item) + 1);
                     startPolling();
                 });
             }, () -> Toast.makeText(appContext, R.string.sonos_no_compatible_stream,
@@ -331,13 +387,13 @@ public final class SonosQueuePlayer {
         }
 
         /**
-         * Prepares item {@code index}; skips unpreparable items;
+         * Prepares the item at {@code index}; skips unpreparable items;
          * {@code onExhausted} fires when the end of the queue is reached.
          */
         private void prepare(final int index, final boolean quiet, final OnPrepared onReady,
                              final Runnable onExhausted) {
             final int gen = generation;
-            if (index >= items.size()) {
+            if (index < 0 || index >= items.size()) {
                 onExhausted.run();
                 return;
             }
@@ -347,12 +403,14 @@ public final class SonosQueuePlayer {
                     return;
                 }
                 Log.w(TAG, "skipping unplayable queue item: " + item.title());
-                prepare(index + 1, quiet, onReady, onExhausted);
+                // re-derive the position: the queue may have been edited meanwhile
+                final int at = items.indexOf(item);
+                prepare(at < 0 ? items.size() : at + 1, quiet, onReady, onExhausted);
             };
             disposables.add(item.prepare(appContext, quiet,
                     prepared -> {
                         if (gen == generation) {
-                            onReady.ready(index, prepared);
+                            onReady.ready(item, prepared);
                         }
                     },
                     throwable -> skip.run()));
@@ -365,10 +423,12 @@ public final class SonosQueuePlayer {
             }
             generation++;
             nextUrl = null;
+            nextItem = null;
+            wantedNext = null;
             stoppedPolls = 0;
             final String oldUrl = currentUrl;
-            prepare(index, false, (i, prepared) -> {
-                currentIndex = i;
+            prepare(index, false, (item, prepared) -> {
+                currentItem = item;
                 currentUrl = prepared.url;
                 SonosPlayer.persistLast(appContext, device, prepared.title,
                         prepared.durationSeconds);
@@ -381,22 +441,75 @@ public final class SonosQueuePlayer {
                     // ponytail: the speaker may briefly keep the previously queued next
                     // track until this overwrites it — harmless unless the new track
                     // ends within the download time of its successor
-                    queueNext(i + 1);
+                    queueNext(items.indexOf(item) + 1);
                 });
             }, () -> Toast.makeText(appContext, R.string.sonos_no_compatible_stream,
                     Toast.LENGTH_LONG).show());
         }
 
+        void add(final Item item) {
+            items.add(item);
+            version++;
+            syncNext();
+        }
+
+        boolean removeAt(final int index) {
+            if (index < 0 || index >= items.size() || items.get(index) == currentItem) {
+                return false; // never the playing row
+            }
+            items.remove(index);
+            version++;
+            syncNext();
+            return true;
+        }
+
+        void move(final int from, final int to) {
+            if (from < 0 || from >= items.size() || to < 0 || to >= items.size()
+                    || from == to) {
+                return;
+            }
+            items.add(to, items.remove(from));
+            version++;
+            syncNext();
+        }
+
+        /** After a queue edit: if a different item now follows the playing one, re-queue. */
+        private void syncNext() {
+            final int after = items.indexOf(currentItem) + 1;
+            final Item desired = after > 0 && after < items.size() ? items.get(after) : null;
+            if (desired == wantedNext) {
+                // ponytail: dedup by intent only — overlapping re-queues race
+                // last-write-wins on the speaker, self-heals on the next advance/skip
+                return;
+            }
+            if (desired == null) {
+                wantedNext = null;
+                nextItem = null;
+                nextUrl = null;
+                // the speaker still has the old next queued — clear it, best-effort
+                disposables.add(Completable.fromAction(device::clearNext)
+                        .subscribeOn(Schedulers.io())
+                        .subscribe(() -> { }, throwable -> { }));
+                return;
+            }
+            queueNext(after);
+        }
+
         private void queueNext(final int fromIndex) {
-            prepare(fromIndex, true, (index, prepared) -> soap(
+            wantedNext = fromIndex >= 0 && fromIndex < items.size()
+                    ? items.get(fromIndex) : null;
+            prepare(fromIndex, true, (item, prepared) -> soap(
                     () -> device.setNextUri(prepared.url, prepared.title,
                             prepared.thumbnailUrl, prepared.durationSeconds,
                             prepared.mimeType),
                     () -> {
-                        nextIndex = index;
+                        nextItem = item;
                         nextPrepared = prepared;
                         nextUrl = prepared.url;
-                    }), () -> nextUrl = null);
+                    }), () -> {
+                nextItem = null;
+                nextUrl = null;
+            });
         }
 
         private void startPolling() {
@@ -422,12 +535,13 @@ public final class SonosQueuePlayer {
             if (nextUrl != null && nextUrl.equals(trackUri)) {
                 // speaker advanced to the queued track
                 SonosStreamService.drop(currentUrl);
-                currentIndex = nextIndex;
+                currentItem = nextItem;
                 currentUrl = nextUrl;
+                nextItem = null;
                 nextUrl = null;
                 SonosPlayer.persistLast(appContext, device, nextPrepared.title,
                         nextPrepared.durationSeconds);
-                queueNext(nextIndex + 1);
+                queueNext(items.indexOf(currentItem) + 1);
                 stoppedPolls = 0;
                 return;
             }

@@ -100,6 +100,7 @@ import org.schabi.newpipe.sleep.SleepTimerService;
 import org.schabi.newpipe.util.*;
 import org.schabi.newpipe.util.external_communication.KoreUtils;
 import org.schabi.newpipe.util.sonos.SonosPlayer;
+import org.schabi.newpipe.util.sonos.SonosQueuePlayer;
 
 import org.schabi.newpipe.util.external_communication.ShareUtils;
 
@@ -645,9 +646,33 @@ public final class VideoDetailFragment
     //////////////////////////////////////////////////////////////////////////*/
 
     private void playOnSonos(final boolean useLastSpeaker) {
-        if (currentInfo != null) {
-            SonosPlayer.play(activity, currentInfo, useLastSpeaker, null);
+        if (currentInfo == null) {
+            return;
         }
+        // Taps go through the queue player (a single video = 1-item queue), so the
+        // next tap can offer appending. Live streams can't be queued and long-press
+        // keeps its instant replay-to-last-speaker semantics — both use the plain path.
+        if (useLastSpeaker || StreamTypeUtil.isLiveStream(currentInfo.getStreamType())) {
+            SonosPlayer.play(activity, currentInfo, useLastSpeaker, null);
+            return;
+        }
+        if (!SonosQueuePlayer.hasSession()) {
+            SonosQueuePlayer.enqueue(activity, currentInfo); // starts a fresh queue
+            return;
+        }
+        new AlertDialog.Builder(activity)
+                .setItems(new CharSequence[]{
+                        getString(R.string.sonos_play_now),
+                        getString(R.string.sonos_add_to_queue)},
+                        (dialog, which) -> {
+                            if (which == 0) {
+                                SonosQueuePlayer.stop();
+                                SonosQueuePlayer.enqueue(activity, currentInfo);
+                            } else {
+                                SonosQueuePlayer.enqueue(activity, currentInfo);
+                            }
+                        })
+                .show();
     }
 
 

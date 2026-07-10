@@ -57,6 +57,7 @@ public final class SonosControlActivity extends AppCompatActivity {
     private boolean draggingVolume;
     private long knownDuration;
     private int shownQueueIndex = -2;
+    private int shownQueueVersion = -2;
 
     @Override
     protected void onCreate(@Nullable final Bundle savedInstanceState) {
@@ -97,6 +98,10 @@ public final class SonosControlActivity extends AppCompatActivity {
         nextButton.setOnClickListener(v -> SonosQueuePlayer.next());
         queueList.setOnItemClickListener((parent, view, position, id) ->
                 SonosQueuePlayer.skipTo(position));
+        queueList.setOnItemLongClickListener((parent, view, position, id) -> {
+            showQueueItemDialog(position);
+            return true;
+        });
 
         positionBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
@@ -272,11 +277,33 @@ public final class SonosControlActivity extends AppCompatActivity {
         }
     }
 
-    /** Renders the queue-player playlist; rebuilds only when the playing index moves. */
+    /** Long-press editing: reorder or remove a queue row. */
+    private void showQueueItemDialog(final int position) {
+        new AlertDialog.Builder(this)
+                .setItems(new CharSequence[]{
+                        getString(R.string.sonos_move_up),
+                        getString(R.string.sonos_move_down),
+                        getString(R.string.sonos_remove)},
+                        (dialog, which) -> {
+                            if (which == 0) {
+                                SonosQueuePlayer.move(position, position - 1);
+                            } else if (which == 1) {
+                                SonosQueuePlayer.move(position, position + 1);
+                            } else if (!SonosQueuePlayer.removeAt(position)) {
+                                Toast.makeText(this, R.string.sonos_remove_playing_denied,
+                                        Toast.LENGTH_SHORT).show();
+                            }
+                            updateQueue();
+                        })
+                .show();
+    }
+
+    /** Renders the queue-player playlist; rebuilds when the playing index or queue edits change. */
     private void updateQueue() {
         final List<String> titles = SonosQueuePlayer.queueTitles();
         final List<Long> durations = SonosQueuePlayer.queueDurations();
         final int index = SonosQueuePlayer.queueIndex();
+        final int version = SonosQueuePlayer.queueVersion();
         prevButton.setVisibility(titles == null ? View.GONE : View.VISIBLE);
         nextButton.setVisibility(titles == null ? View.GONE : View.VISIBLE);
         if (titles == null || durations == null) {
@@ -286,10 +313,11 @@ public final class SonosControlActivity extends AppCompatActivity {
             shownQueueIndex = -2;
             return;
         }
-        if (index == shownQueueIndex) {
+        if (index == shownQueueIndex && version == shownQueueVersion) {
             return;
         }
         shownQueueIndex = index;
+        shownQueueVersion = version;
         final List<String> rows = new ArrayList<>(titles.size());
         for (int i = 0; i < titles.size(); i++) {
             final long duration = durations.get(i);

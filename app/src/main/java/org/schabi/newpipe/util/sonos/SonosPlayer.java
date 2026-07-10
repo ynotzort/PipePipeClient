@@ -97,8 +97,12 @@ public final class SonosPlayer {
                 settle(onSpeakerChosen);
                 return;
             }
-            chooseSpeaker(activity, useLastSpeaker, onSpeakerChosen, device ->
-                    playLive(appContext, activity, device, info));
+            chooseSpeaker(activity, useLastSpeaker, onSpeakerChosen, device -> {
+                // a leftover queue session would later see STOPPED and tear down
+                // the stream service under the new playback
+                SonosQueuePlayer.stop();
+                playLive(appContext, activity, device, info);
+            });
             return;
         }
         if (pickStream(info, true) == null && pickStream(info, false) == null) {
@@ -107,11 +111,13 @@ public final class SonosPlayer {
             settle(onSpeakerChosen);
             return;
         }
-        chooseSpeaker(activity, useLastSpeaker, onSpeakerChosen, device ->
-                resolve(appContext, info, false,
-                        (url, mimeType) ->
-                                playUri(appContext, activity, device, info, url, mimeType),
-                        throwable -> showError(appContext, throwable)));
+        chooseSpeaker(activity, useLastSpeaker, onSpeakerChosen, device -> {
+            SonosQueuePlayer.stop();
+            resolve(appContext, info, false,
+                    (url, mimeType) ->
+                            playUri(appContext, activity, device, info, url, mimeType),
+                    throwable -> showError(appContext, throwable));
+        });
     }
 
     /**
