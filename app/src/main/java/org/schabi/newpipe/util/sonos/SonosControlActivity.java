@@ -68,20 +68,20 @@ public final class SonosControlActivity extends AppCompatActivity {
         setTitle(R.string.play_on_sonos_title);
 
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
-        final String ip = prefs.getString("sonos_last_ip", null);
+        final String ip = prefs.getString(SonosPlayer.PREF_LAST_IP, null);
         if (ip == null) {
             Toast.makeText(this, R.string.sonos_no_speaker_yet, Toast.LENGTH_LONG).show();
             finish();
             return;
         }
-        device = new SonosDevice(ip, prefs.getString("sonos_last_name", ip));
+        device = new SonosDevice(ip, prefs.getString(SonosPlayer.PREF_LAST_NAME, ip));
         // Sonos reports TrackDuration from the file's (sometimes wrong) moov header;
         // prefer the real duration we knew when we started playback.
-        knownDuration = prefs.getLong("sonos_last_duration", 0);
+        knownDuration = prefs.getLong(SonosPlayer.PREF_LAST_DURATION, 0);
 
         ((TextView) findViewById(R.id.sonos_room_name)).setText(device.getRoomName());
         titleView = findViewById(R.id.sonos_track_title);
-        titleView.setText(prefs.getString("sonos_last_title", ""));
+        titleView.setText(prefs.getString(SonosPlayer.PREF_LAST_TITLE, ""));
         stateView = findViewById(R.id.sonos_state);
         timeLabel = findViewById(R.id.sonos_time_label);
         positionBar = findViewById(R.id.sonos_position_bar);
@@ -233,8 +233,8 @@ public final class SonosControlActivity extends AppCompatActivity {
         final long[] position = (long[]) status[1];
         final int volume = (int) status[2];
         // Re-read per tick: the queue player updates these prefs on track advance.
-        titleView.setText(prefs.getString("sonos_last_title", ""));
-        knownDuration = prefs.getLong("sonos_last_duration", 0);
+        titleView.setText(prefs.getString(SonosPlayer.PREF_LAST_TITLE, ""));
+        knownDuration = prefs.getLong(SonosPlayer.PREF_LAST_DURATION, 0);
         updateQueue();
         switch (state) {
             case "PLAYING":
@@ -268,10 +268,11 @@ public final class SonosControlActivity extends AppCompatActivity {
     /** Renders the queue-player playlist; rebuilds only when the playing index moves. */
     private void updateQueue() {
         final List<String> titles = SonosQueuePlayer.queueTitles();
+        final List<Long> durations = SonosQueuePlayer.queueDurations();
         final int index = SonosQueuePlayer.queueIndex();
         prevButton.setVisibility(titles == null ? View.GONE : View.VISIBLE);
         nextButton.setVisibility(titles == null ? View.GONE : View.VISIBLE);
-        if (titles == null) {
+        if (titles == null || durations == null) {
             if (queueList.getAdapter() != null) {
                 queueList.setAdapter(null);
             }
@@ -284,11 +285,21 @@ public final class SonosControlActivity extends AppCompatActivity {
         shownQueueIndex = index;
         final List<String> rows = new ArrayList<>(titles.size());
         for (int i = 0; i < titles.size(); i++) {
-            rows.add((i == index ? "▶ " : "") + titles.get(i));
+            final long duration = durations.get(i);
+            rows.add((i == index ? "▶ " : "") + titles.get(i)
+                    + (duration > 0 ? "  ·  " + shortTime(duration) : ""));
         }
         queueList.setAdapter(new ArrayAdapter<>(this,
                 android.R.layout.simple_list_item_1, rows));
         queueList.setSelection(Math.max(0, index - 1));
+    }
+
+    /** "3:45" for tracks under an hour, "1:03:45" above. */
+    private static String shortTime(final long seconds) {
+        return seconds >= 3600
+                ? String.format(Locale.US, "%d:%02d:%02d",
+                        seconds / 3600, (seconds / 60) % 60, seconds % 60)
+                : String.format(Locale.US, "%d:%02d", seconds / 60, seconds % 60);
     }
 
     private static String formatTimes(final long position, final long duration) {

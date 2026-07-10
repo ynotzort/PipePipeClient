@@ -118,6 +118,7 @@ public final class SonosLocalPlayActivity extends AppCompatActivity {
         final List<SonosQueuePlayer.Item> items = new ArrayList<>();
         final File baseDir = playlistDirectory();
         String pendingTitle = null;
+        long pendingDuration = 0;
         try (InputStream in = getContentResolver().openInputStream(uri)) {
             if (in == null) {
                 throw new IOException("Cannot open " + uri);
@@ -137,15 +138,21 @@ public final class SonosLocalPlayActivity extends AppCompatActivity {
                         if (comma >= 0 && comma + 1 < line.length()) {
                             pendingTitle = line.substring(comma + 1).trim();
                         }
+                        try {
+                            pendingDuration = (long) Double.parseDouble(line.substring(
+                                    "#EXTINF:".length(), comma >= 0 ? comma : line.length()));
+                        } catch (final RuntimeException ignored) {
+                        }
                     }
                     continue;
                 }
-                final SonosQueuePlayer.Item item =
-                        toItem(line.replace('\\', '/'), pendingTitle, baseDir);
+                final SonosQueuePlayer.Item item = toItem(line.replace('\\', '/'),
+                        pendingTitle, Math.max(0, pendingDuration), baseDir);
                 if (item != null) {
                     items.add(item);
                 }
                 pendingTitle = null;
+                pendingDuration = 0;
             }
         }
         Log.i(TAG, "m3u parsed: " + items.size() + " items, baseDir=" + baseDir
@@ -155,6 +162,7 @@ public final class SonosLocalPlayActivity extends AppCompatActivity {
 
     @Nullable
     private SonosQueuePlayer.Item toItem(final String location, @Nullable final String title,
+                                         final long durationSeconds,
                                          @Nullable final File baseDir) {
         if (location.startsWith("http://") || location.startsWith("https://")) {
             return new SonosQueuePlayer.HttpItem(location,
@@ -171,19 +179,21 @@ public final class SonosLocalPlayActivity extends AppCompatActivity {
             file = new File(baseDir, location);
         }
         if (file != null && file.isFile()) {
-            return new SonosQueuePlayer.LocalFileItem(Uri.fromFile(file), displayTitle);
+            return new SonosQueuePlayer.LocalFileItem(Uri.fromFile(file), displayTitle,
+                    durationSeconds);
         }
         // Stale playlist (files renamed since it was written) — fuzzy-match
         // within the playlist folder.
         final File fuzzy = baseDir != null ? fuzzyFind(baseDir, fileName) : null;
         if (fuzzy != null) {
-            return new SonosQueuePlayer.LocalFileItem(Uri.fromFile(fuzzy), displayTitle);
+            return new SonosQueuePlayer.LocalFileItem(Uri.fromFile(fuzzy), displayTitle,
+                    durationSeconds);
         }
         // Path unresolvable (opaque file-manager URI, moved file, …) — find the
         // entry by filename in the media index instead.
         final Uri media = findInMediaStore(fileName, location);
         if (media != null) {
-            return new SonosQueuePlayer.LocalFileItem(media, displayTitle);
+            return new SonosQueuePlayer.LocalFileItem(media, displayTitle, durationSeconds);
         }
         Log.w(TAG, "m3u entry not found: " + location);
         return null;

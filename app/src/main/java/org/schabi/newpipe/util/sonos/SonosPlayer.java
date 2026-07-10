@@ -10,6 +10,7 @@ import android.database.Cursor;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.provider.OpenableColumns;
+import android.util.Log;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -45,6 +46,7 @@ import us.shandian.giga.get.DownloadMission;
 import us.shandian.giga.get.HlsDownloadStreamHelper;
 import us.shandian.giga.get.MissionRecoveryInfo;
 import us.shandian.giga.service.DownloadManagerService;
+import us.shandian.giga.service.MissionState;
 
 /**
  * Plays a stream's audio on a Sonos speaker. Entry point for both the video
@@ -58,8 +60,11 @@ import us.shandian.giga.service.DownloadManagerService;
  * activity) may finish once {@code onSpeakerChosen} fires.</p>
  */
 public final class SonosPlayer {
-    private static final String PREF_LAST_IP = "sonos_last_ip";
-    private static final String PREF_LAST_NAME = "sonos_last_name";
+    private static final String TAG = "SonosPlayer";
+    static final String PREF_LAST_IP = "sonos_last_ip";
+    static final String PREF_LAST_NAME = "sonos_last_name";
+    static final String PREF_LAST_TITLE = "sonos_last_title";
+    static final String PREF_LAST_DURATION = "sonos_last_duration";
     /** Cache size cap in MB; set from the control screen's "Cache limit" menu. */
     static final String PREF_CACHE_MAX_MB = "sonos_cache_max_mb";
     static final long DEFAULT_CACHE_MAX_MB = 1024;
@@ -302,24 +307,31 @@ public final class SonosPlayer {
                                          final Consumer<Throwable> onError) {
         final File file = cacheFile(appContext, info);
         if (new File(file.getPath() + ".done").exists() && file.length() > 0) {
+            Log.i(TAG, "cache hit: " + file.getName());
             serve(appContext, info, file, onReady, onError);
             return;
         }
+        Log.i(TAG, "cache miss, downloading: " + file.getName());
         try {
             trimCache(appContext, file.getParentFile());
             //noinspection ResultOfMethodCallIgnored
-            file.createNewFile();
+            file.createNewFile(); // no-op if a partial download already exists
             final StoredFileHelper storage = new StoredFileHelper(appContext,
                     Uri.fromFile(file.getParentFile()), Uri.fromFile(file), "sonos");
-            awaitDownload(appContext, file,
-                    () -> serve(appContext, info, file, onReady, onError), onError);
-            DownloadManagerService.startMission(appContext,
-                    new String[]{sabrStream.getContent()}, storage, 'a', 1, info.getUrl(),
-                    null, null, 0,
-                    new MissionRecoveryInfo[]{new MissionRecoveryInfo(sabrStream)},
-                    HlsDownloadStreamHelper.buildResourceDeliveryMethods(sabrStream, null),
-                    HlsDownloadStreamHelper.buildResourceManifestUrls(sabrStream, null),
-                    HlsDownloadStreamHelper.buildResourceIsUrls(sabrStream, null));
+            awaitDownload(appContext, file, storage,
+                    () -> serve(appContext, info, file, onReady, onError), onError, () -> {
+                        DownloadManagerService.startMission(appContext,
+                                new String[]{sabrStream.getContent()}, storage, 'a', 1,
+                                info.getUrl(), null, null, 0,
+                                new MissionRecoveryInfo[]{
+                                        new MissionRecoveryInfo(sabrStream)},
+                                HlsDownloadStreamHelper
+                                        .buildResourceDeliveryMethods(sabrStream, null),
+                                HlsDownloadStreamHelper
+                                        .buildResourceManifestUrls(sabrStream, null),
+                                HlsDownloadStreamHelper
+                                        .buildResourceIsUrls(sabrStream, null));
+                    });
             if (!quiet) {
                 Toast.makeText(appContext, R.string.sonos_downloading, Toast.LENGTH_LONG)
                         .show();
@@ -383,9 +395,18 @@ public final class SonosPlayer {
         }
     }
 
+    /**
+     * Binds to the download service, attaches a finish/error listener for
+     * {@code file}, then either adopts an already-known mission for it or runs
+     * {@code startFreshMission}. Adoption covers the app being killed
+     * mid-download: the reloaded mission auto-resumes on service start, and
+     * blindly starting a second one would corrupt the shared target file.
+     */
     private static void awaitDownload(final Context appContext, final File file,
+                                      final StoredFileHelper storage,
                                       final Runnable onFinished,
-                                      final Consumer<Throwable> onError) {
+                                      final Consumer<Throwable> onError,
+                                      final Runnable startFreshMission) {
         final Uri expectedUri = Uri.fromFile(file);
         final ServiceConnection connection = new ServiceConnection() {
             private DownloadManagerService.DownloadManagerBinder binder;
@@ -438,6 +459,28 @@ public final class SonosPlayer {
             public void onServiceConnected(final ComponentName name, final IBinder service) {
                 binder = (DownloadManagerService.DownloadManagerBinder) service;
                 binder.addMissionEventListener(callback);
+                final MissionState state =
+                        binder.getDownloadManager().checkForExistingMission(storage);
+                if (state == MissionState.Finished) {
+                    // finished while nobody was listening (app killed mid-download,
+                    // giga auto-resumed and completed it) — just mark and serve
+                    Log.i(TAG, "adopting finished mission for " + file.getName());
+                    try {
+                        //noinspection ResultOfMethodCallIgnored
+                        new File(file.getPath() + ".done").createNewFile();
+                    } catch (final IOException ignored) {
+                    }
+                    binder.getDownloadManager().forgetMission(storage);
+                    detach();
+                    onFinished.run();
+                } else if (state == MissionState.None) {
+                    startFreshMission.run();
+                } else {
+                    // Pending/PendingRunning: reuse it — the listener above gets its
+                    // finish event. ponytail: a manually-paused mission stays paused;
+                    // resume it from the downloads screen if that ever happens.
+                    Log.i(TAG, "adopting " + state + " mission for " + file.getName());
+                }
             }
 
             @Override
@@ -459,8 +502,8 @@ public final class SonosPlayer {
         PreferenceManager.getDefaultSharedPreferences(appContext).edit()
                 .putString(PREF_LAST_IP, device.getIp())
                 .putString(PREF_LAST_NAME, device.getRoomName())
-                .putString("sonos_last_title", title)
-                .putLong("sonos_last_duration", durationSeconds)
+                .putString(PREF_LAST_TITLE, title)
+                .putLong(PREF_LAST_DURATION, durationSeconds)
                 .apply();
     }
 

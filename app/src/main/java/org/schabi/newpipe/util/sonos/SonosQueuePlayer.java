@@ -53,6 +53,9 @@ public final class SonosQueuePlayer {
         /** Display title for the queue list (available before preparing). */
         String title();
 
+        /** Duration in seconds for the queue list, 0 if unknown before preparing. */
+        long durationSeconds();
+
         /**
          * Resolves to a playable URL (may download/copy first); calls exactly one
          * of the callbacks on the main thread.
@@ -124,6 +127,19 @@ public final class SonosQueuePlayer {
         return titles;
     }
 
+    /** @return per-item durations in seconds (0 = unknown), or null if no session. */
+    @Nullable
+    public static List<Long> queueDurations() {
+        if (session == null) {
+            return null;
+        }
+        final List<Long> durations = new ArrayList<>(session.items.size());
+        for (final Item item : session.items) {
+            durations.add(item.durationSeconds());
+        }
+        return durations;
+    }
+
     /** @return index of the item currently playing, or -1 if no queue session. */
     public static int queueIndex() {
         return session == null ? -1 : session.currentIndex;
@@ -162,6 +178,11 @@ public final class SonosQueuePlayer {
         }
 
         @Override
+        public long durationSeconds() {
+            return queueItem.getDuration();
+        }
+
+        @Override
         public Disposable prepare(final Context appContext, final boolean quiet,
                                   final Consumer<Prepared> onReady,
                                   final Consumer<Throwable> onError) {
@@ -182,15 +203,22 @@ public final class SonosQueuePlayer {
     static final class LocalFileItem implements Item {
         private final Uri uri;
         private final String displayTitle;
+        private final long durationSeconds;
 
-        LocalFileItem(final Uri uri, final String displayTitle) {
+        LocalFileItem(final Uri uri, final String displayTitle, final long durationSeconds) {
             this.uri = uri;
             this.displayTitle = displayTitle;
+            this.durationSeconds = durationSeconds;
         }
 
         @Override
         public String title() {
             return displayTitle;
+        }
+
+        @Override
+        public long durationSeconds() {
+            return durationSeconds;
         }
 
         @Override
@@ -223,6 +251,11 @@ public final class SonosQueuePlayer {
         @Override
         public String title() {
             return displayTitle;
+        }
+
+        @Override
+        public long durationSeconds() {
+            return 0;
         }
 
         @Override
