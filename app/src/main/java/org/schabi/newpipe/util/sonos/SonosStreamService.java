@@ -12,6 +12,7 @@ import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.util.Log;
 
 import androidx.annotation.Nullable;
@@ -77,6 +78,7 @@ public final class SonosStreamService extends Service {
 
     private ServerSocket serverSocket;
     private WifiManager.WifiLock wifiLock;
+    private PowerManager.WakeLock wakeLock;
     private final Handler autoStopHandler = new Handler();
     private final AtomicInteger liveClients = new AtomicInteger();
     /** Running live-relay ffmpeg session ids, cancelled on destroy. */
@@ -229,6 +231,15 @@ public final class SonosStreamService extends Service {
                     (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             wifiLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, TAG);
             wifiLock.acquire();
+        }
+        // The WifiLock keeps the radio up but NOT the CPU: with the screen off the
+        // CPU dozes, the live-relay ffmpeg gets suspended and the speaker's buffer
+        // drains. Hold the CPU for the service's (auto-stop-bounded) lifetime.
+        if (wakeLock == null) {
+            final PowerManager power = (PowerManager)
+                    getApplicationContext().getSystemService(Context.POWER_SERVICE);
+            wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "pipepipe:" + TAG);
+            wakeLock.acquire();
         }
     }
 
@@ -427,6 +438,9 @@ public final class SonosStreamService extends Service {
         }
         if (wifiLock != null && wifiLock.isHeld()) {
             wifiLock.release();
+        }
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
         }
         // Files stay in cache for instant replays; the size-capped LRU trim in
         // SonosPlayer (and Android's cache-dir eviction) bounds disk usage.
