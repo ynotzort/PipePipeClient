@@ -46,6 +46,16 @@
 <string name="default_resolution_title">Default resolution</string>
 <string name="default_popup_resolution_title">Default popup resolution</string>
 <string name="play_with_kodi_title">Play with Kodi</string>
+<string name="play_on_sonos_title">Sonos</string>
+<string name="sonos_searching">Searching for Sonos speakers…</string>
+<string name="sonos_no_speakers_found">No Sonos speakers found on this network</string>
+<string name="sonos_no_compatible_stream">No Sonos-compatible audio stream (AAC/MP3) available</string>
+<string name="sonos_select_speaker">Play on Sonos speaker</string>
+<string name="sonos_playing_toast">Playing on %s</string>
+<string name="sonos_error">Sonos error: %s</string>
+<string name="sonos_volume">Volume</string>
+<string name="sonos_resume">Resume</string>
+<string name="sonos_downloading">Downloading audio for Sonos… playback starts when done</string>
 <string name="kore_not_found">Install missing Kore app?</string>
 <string name="crash_the_player">Crash the player</string>
 <string name="notification_scale_to_square_image_title">Crop thumbnail to 1:1 aspect ratio</string>
