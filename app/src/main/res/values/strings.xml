@@ -69,10 +69,8 @@
 <string name="sonos_play_now">Play now</string>
 <string name="sonos_add_to_queue">Add to queue</string>
 <string name="sonos_added_to_queue">Added to Sonos queue</string>
-<string name="sonos_move_up">Move up</string>
-<string name="sonos_move_down">Move down</string>
-<string name="sonos_remove">Remove</string>
 <string name="sonos_remove_playing_denied">Can\'t remove the playing track</string>
+<string name="sonos_removed_from_queue">Removed from queue</string>
 <string name="kore_not_found">Install missing Kore app?</string>
 <string name="crash_the_player">Crash the player</string>
 <string name="notification_scale_to_square_image_title">Crop thumbnail to 1:1 aspect ratio</string>

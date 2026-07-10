@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.widget.Toast;
 
@@ -220,9 +222,20 @@ public final class SonosQueuePlayer {
         }
     }
 
-    /** Removes the queue item at {@code index}; false if it's the playing one. */
-    public static boolean removeAt(final int index) {
-        return session != null && session.removeAt(index);
+    /**
+     * Removes the queue item at {@code index} and returns it (for undo);
+     * null if it's the playing one or there is no session.
+     */
+    @Nullable
+    public static Item removeAt(final int index) {
+        return session == null ? null : session.removeAt(index);
+    }
+
+    /** Undo of {@link #removeAt}: puts the item back at (or near) its old spot. */
+    public static void restore(final int index, final Item item) {
+        if (session != null) {
+            session.addAt(index, item);
+        }
     }
 
     /** Moves the queue item at {@code from} to position {@code to}. */
@@ -381,6 +394,7 @@ public final class SonosQueuePlayer {
         private Prepared nextPrepared;
         /** Last item a queueNext was issued for (dedups syncNext re-queues). */
         private Item wantedNext;
+        private final Handler syncHandler = new Handler(Looper.getMainLooper());
         private int stoppedPolls;
         /** Bumped on skip; stale prepare callbacks (e.g. a superseded download) bail out. */
         private int generation;
@@ -484,14 +498,21 @@ public final class SonosQueuePlayer {
             syncNext();
         }
 
-        boolean removeAt(final int index) {
-            if (index < 0 || index >= items.size() || items.get(index) == currentItem) {
-                return false; // never the playing row
-            }
-            items.remove(index);
+        void addAt(final int index, final Item item) {
+            items.add(Math.max(0, Math.min(index, items.size())), item);
             version++;
             syncNext();
-            return true;
+        }
+
+        @Nullable
+        Item removeAt(final int index) {
+            if (index < 0 || index >= items.size() || items.get(index) == currentItem) {
+                return null; // never the playing row
+            }
+            final Item removed = items.remove(index);
+            version++;
+            syncNext();
+            return removed;
         }
 
         void move(final int from, final int to) {
@@ -504,8 +525,21 @@ public final class SonosQueuePlayer {
             syncNext();
         }
 
-        /** After a queue edit: if a different item now follows the playing one, re-queue. */
+        /**
+         * Debounced {@link #doSyncNext()}: rapid edits (each swap of a drag pass
+         * lands here) coalesce into one re-queue check after the queue settles.
+         */
         private void syncNext() {
+            syncHandler.removeCallbacksAndMessages(null);
+            syncHandler.postDelayed(() -> {
+                if (session == this) {
+                    doSyncNext();
+                }
+            }, 600);
+        }
+
+        /** After a queue edit: if a different item now follows the playing one, re-queue. */
+        private void doSyncNext() {
             final int after = items.indexOf(currentItem) + 1;
             final Item desired = after > 0 && after < items.size() ? items.get(after) : null;
             if (desired == wantedNext) {

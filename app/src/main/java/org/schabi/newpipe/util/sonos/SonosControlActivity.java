@@ -1,21 +1,32 @@
 package org.schabi.newpipe.util.sonos;
 
 import android.content.SharedPreferences;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.os.Bundle;
+import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
-import android.widget.ArrayAdapter;
+import android.view.ViewGroup;
 import android.widget.Button;
-import android.widget.ListView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.content.res.AppCompatResources;
 import androidx.preference.PreferenceManager;
+import androidx.recyclerview.widget.ItemTouchHelper;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+
+import com.google.android.material.snackbar.Snackbar;
 
 import org.schabi.newpipe.R;
 import org.schabi.newpipe.util.Localization;
@@ -50,7 +61,9 @@ public final class SonosControlActivity extends AppCompatActivity {
     private TextView timeLabel;
     private SeekBar positionBar;
     private SeekBar volumeBar;
-    private ListView queueList;
+    private RecyclerView queueList;
+    private final List<String> queueRows = new ArrayList<>();
+    private final QueueAdapter queueAdapter = new QueueAdapter();
     private Button prevButton;
     private Button nextButton;
     private boolean draggingPosition;
@@ -96,12 +109,9 @@ public final class SonosControlActivity extends AppCompatActivity {
         nextButton = findViewById(R.id.sonos_btn_next);
         prevButton.setOnClickListener(v -> SonosQueuePlayer.previous());
         nextButton.setOnClickListener(v -> SonosQueuePlayer.next());
-        queueList.setOnItemClickListener((parent, view, position, id) ->
-                SonosQueuePlayer.skipTo(position));
-        queueList.setOnItemLongClickListener((parent, view, position, id) -> {
-            showQueueItemDialog(position);
-            return true;
-        });
+        queueList.setLayoutManager(new LinearLayoutManager(this));
+        queueList.setAdapter(queueAdapter);
+        attachQueueTouchHelper();
 
         positionBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
@@ -277,25 +287,147 @@ public final class SonosControlActivity extends AppCompatActivity {
         }
     }
 
-    /** Long-press editing: reorder or remove a queue row. */
-    private void showQueueItemDialog(final int position) {
-        new AlertDialog.Builder(this)
-                .setItems(new CharSequence[]{
-                        getString(R.string.sonos_move_up),
-                        getString(R.string.sonos_move_down),
-                        getString(R.string.sonos_remove)},
-                        (dialog, which) -> {
-                            if (which == 0) {
-                                SonosQueuePlayer.move(position, position - 1);
-                            } else if (which == 1) {
-                                SonosQueuePlayer.move(position, position + 1);
-                            } else if (!SonosQueuePlayer.removeAt(position)) {
-                                Toast.makeText(this, R.string.sonos_remove_playing_denied,
-                                        Toast.LENGTH_SHORT).show();
-                            }
+    /** One-line queue rows: tap to play. */
+    private final class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.Holder> {
+        final class Holder extends RecyclerView.ViewHolder {
+            private final TextView text;
+
+            Holder(final View view) {
+                super(view);
+                text = view.findViewById(android.R.id.text1);
+                view.setOnClickListener(v -> {
+                    final int position = getBindingAdapterPosition();
+                    if (position != RecyclerView.NO_POSITION) {
+                        SonosQueuePlayer.skipTo(position);
+                    }
+                });
+            }
+        }
+
+        @NonNull
+        @Override
+        public Holder onCreateViewHolder(@NonNull final ViewGroup parent, final int viewType) {
+            return new Holder(LayoutInflater.from(parent.getContext())
+                    .inflate(android.R.layout.simple_list_item_1, parent, false));
+        }
+
+        @Override
+        public void onBindViewHolder(@NonNull final Holder holder, final int position) {
+            holder.text.setText(queueRows.get(position));
+        }
+
+        @Override
+        public int getItemCount() {
+            return queueRows.size();
+        }
+    }
+
+    /** Long-press-drag to reorder, swipe to remove (red + bin reveal, undo snackbar). */
+    private void attachQueueTouchHelper() {
+        final ColorDrawable swipeBackground = new ColorDrawable(0xFFC62828);
+        final Drawable deleteIcon =
+                AppCompatResources.getDrawable(this, R.drawable.ic_delete);
+        if (deleteIcon != null) {
+            deleteIcon.setTint(Color.WHITE);
+        }
+        new ItemTouchHelper(new ItemTouchHelper.SimpleCallback(
+                ItemTouchHelper.UP | ItemTouchHelper.DOWN,
+                ItemTouchHelper.LEFT | ItemTouchHelper.RIGHT) {
+            @Override
+            public boolean onMove(@NonNull final RecyclerView recyclerView,
+                                  @NonNull final RecyclerView.ViewHolder viewHolder,
+                                  @NonNull final RecyclerView.ViewHolder target) {
+                final int from = viewHolder.getBindingAdapterPosition();
+                final int to = target.getBindingAdapterPosition();
+                if (from == RecyclerView.NO_POSITION || to == RecyclerView.NO_POSITION) {
+                    return false;
+                }
+                SonosQueuePlayer.move(from, to);
+                queueRows.add(to, queueRows.remove(from));
+                queueAdapter.notifyItemMoved(from, to);
+                // keep the poll's rebuild check in sync or it would reset the drag
+                shownQueueVersion = SonosQueuePlayer.queueVersion();
+                return true;
+            }
+
+            @Override
+            public int getSwipeDirs(@NonNull final RecyclerView recyclerView,
+                                    @NonNull final RecyclerView.ViewHolder viewHolder) {
+                // the playing row can't be removed — don't tease the red bin
+                return viewHolder.getBindingAdapterPosition()
+                        == SonosQueuePlayer.queueIndex()
+                        ? 0 : super.getSwipeDirs(recyclerView, viewHolder);
+            }
+
+            @Override
+            public void onSwiped(@NonNull final RecyclerView.ViewHolder viewHolder,
+                                 final int direction) {
+                final int position = viewHolder.getBindingAdapterPosition();
+                final SonosQueuePlayer.Item removed = position == RecyclerView.NO_POSITION
+                        ? null : SonosQueuePlayer.removeAt(position);
+                if (removed == null) {
+                    Toast.makeText(SonosControlActivity.this,
+                            R.string.sonos_remove_playing_denied, Toast.LENGTH_SHORT).show();
+                    queueAdapter.notifyItemChanged(position); // snap the row back
+                    return;
+                }
+                queueRows.remove(position);
+                queueAdapter.notifyItemRemoved(position);
+                shownQueueVersion = SonosQueuePlayer.queueVersion();
+                Snackbar.make(queueList, R.string.sonos_removed_from_queue,
+                                Snackbar.LENGTH_LONG)
+                        .setAction(R.string.undo, v -> {
+                            SonosQueuePlayer.restore(position, removed);
+                            shownQueueIndex = -2; // force list rebuild
                             updateQueue();
                         })
-                .show();
+                        .show();
+            }
+
+            @Override
+            public void onChildDraw(@NonNull final Canvas canvas,
+                                    @NonNull final RecyclerView recyclerView,
+                                    @NonNull final RecyclerView.ViewHolder viewHolder,
+                                    final float dX, final float dY, final int actionState,
+                                    final boolean isCurrentlyActive) {
+                if (actionState == ItemTouchHelper.ACTION_STATE_SWIPE && dX != 0) {
+                    final View row = viewHolder.itemView;
+                    if (dX > 0) {
+                        swipeBackground.setBounds(row.getLeft(), row.getTop(),
+                                row.getLeft() + (int) dX, row.getBottom());
+                    } else {
+                        swipeBackground.setBounds(row.getRight() + (int) dX, row.getTop(),
+                                row.getRight(), row.getBottom());
+                    }
+                    swipeBackground.draw(canvas);
+                    if (deleteIcon != null) {
+                        final int size = deleteIcon.getIntrinsicHeight();
+                        final int top = row.getTop() + (row.getHeight() - size) / 2;
+                        final int margin = size;
+                        final int left = dX > 0
+                                ? row.getLeft() + margin
+                                : row.getRight() - margin - size;
+                        deleteIcon.setBounds(left, top, left + size, top + size);
+                        deleteIcon.draw(canvas);
+                    }
+                }
+                super.onChildDraw(canvas, recyclerView, viewHolder, dX, dY,
+                        actionState, isCurrentlyActive);
+            }
+
+            @Override
+            public void clearView(@NonNull final RecyclerView recyclerView,
+                                  @NonNull final RecyclerView.ViewHolder viewHolder) {
+                super.clearView(recyclerView, viewHolder);
+                // drag finished — rebuild so the ▶ marker lands where it belongs.
+                // posted: clearView can fire mid-layout (e.g. rapid swipes), and
+                // notifyDataSetChanged during layout throws IllegalStateException
+                queueList.post(() -> {
+                    shownQueueIndex = -2;
+                    updateQueue();
+                });
+            }
+        }).attachToRecyclerView(queueList);
     }
 
     /** Renders the queue-player playlist; rebuilds when the playing index or queue edits change. */
@@ -307,8 +439,9 @@ public final class SonosControlActivity extends AppCompatActivity {
         prevButton.setVisibility(titles == null ? View.GONE : View.VISIBLE);
         nextButton.setVisibility(titles == null ? View.GONE : View.VISIBLE);
         if (titles == null || durations == null) {
-            if (queueList.getAdapter() != null) {
-                queueList.setAdapter(null);
+            if (!queueRows.isEmpty()) {
+                queueRows.clear();
+                queueAdapter.notifyDataSetChanged();
             }
             shownQueueIndex = -2;
             return;
@@ -316,17 +449,19 @@ public final class SonosControlActivity extends AppCompatActivity {
         if (index == shownQueueIndex && version == shownQueueVersion) {
             return;
         }
+        final boolean indexMoved = index != shownQueueIndex;
         shownQueueIndex = index;
         shownQueueVersion = version;
-        final List<String> rows = new ArrayList<>(titles.size());
+        queueRows.clear();
         for (int i = 0; i < titles.size(); i++) {
             final long duration = durations.get(i);
-            rows.add((i == index ? "▶ " : "") + titles.get(i)
+            queueRows.add((i == index ? "▶ " : "") + titles.get(i)
                     + (duration > 0 ? "  ·  " + shortTime(duration) : ""));
         }
-        queueList.setAdapter(new ArrayAdapter<>(this,
-                android.R.layout.simple_list_item_1, rows));
-        queueList.setSelection(Math.max(0, index - 1));
+        queueAdapter.notifyDataSetChanged();
+        if (indexMoved) {
+            queueList.scrollToPosition(Math.max(0, index - 1));
+        }
     }
 
     /** "3:45" for tracks under an hour, "1:03:45" above. */
