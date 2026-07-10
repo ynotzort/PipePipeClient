@@ -55,6 +55,7 @@ import org.schabi.newpipe.util.NavigationHelper;
 import org.schabi.newpipe.util.PicassoHelper;
 import org.schabi.newpipe.info_list.dialog.StreamDialogDefaultEntry;
 import org.schabi.newpipe.util.external_communication.ShareUtils;
+import org.schabi.newpipe.util.sonos.SonosQueuePlayer;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -240,6 +241,8 @@ public class PlaylistFragment extends BaseListInfoFragment<StreamInfoItem, Playl
             }
         } else if (item.getItemId() == R.id.menu_item_bookmark) {
             onBookmarkClicked();
+        } else if (item.getItemId() == R.id.menu_item_play_on_sonos) {
+            SonosQueuePlayer.play(activity, getPlayQueue().getStreams());
         } else if (item.getItemId() == R.id.menu_item_append_playlist) {
             if(isInfinitePlayList) {
                 new AlertDialog.Builder(requireContext())

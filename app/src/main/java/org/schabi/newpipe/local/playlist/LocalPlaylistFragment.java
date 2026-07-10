@@ -56,6 +56,7 @@ import org.schabi.newpipe.player.playqueue.PlayQueue;
 import org.schabi.newpipe.player.playqueue.SinglePlayQueue;
 import org.schabi.newpipe.util.*;
 import org.schabi.newpipe.util.external_communication.ShareUtils;
+import org.schabi.newpipe.util.sonos.SonosQueuePlayer;
 import org.schabi.newpipe.util.StreamProcessor;
 import org.schabi.newpipe.extractor.NewPipe;
 import org.schabi.newpipe.extractor.StreamingService;
@@ -499,6 +500,8 @@ public class LocalPlaylistFragment extends BaseLocalListFragment<List<PlaylistSt
             }
         } else if (item.getItemId() == R.id.menu_item_rename_playlist) {
             createRenameDialog();
+        } else if (item.getItemId() == R.id.menu_item_play_on_sonos) {
+            SonosQueuePlayer.play(activity, getPlayQueue().getStreams());
         } else if (item.getItemId() == R.id.menu_item_remove_duplicates) {
             if (!isRemovingDuplicateStreams) {
                 new AlertDialog.Builder(requireContext())

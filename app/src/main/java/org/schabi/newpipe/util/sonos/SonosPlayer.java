@@ -25,6 +25,7 @@ import org.schabi.newpipe.streams.io.StoredFileHelper;
 import java.io.File;
 import java.io.IOException;
 import java.util.Comparator;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers;
@@ -59,23 +60,42 @@ public final class SonosPlayer {
                             final boolean useLastSpeaker,
                             @Nullable final Runnable onSpeakerChosen) {
         final Context appContext = activity.getApplicationContext();
-        final AudioStream direct = pickStream(info, true);
-        final AudioStream sabr = direct == null ? pickStream(info, false) : null;
-        if (direct == null && sabr == null) {
+        if (pickStream(info, true) == null && pickStream(info, false) == null) {
             Toast.makeText(appContext, R.string.sonos_no_compatible_stream, Toast.LENGTH_LONG)
                     .show();
             settle(onSpeakerChosen);
             return;
         }
-        chooseSpeaker(activity, useLastSpeaker, onSpeakerChosen, device -> {
-            if (direct != null) {
-                final String mimeType =
-                        direct.getFormat() == MediaFormat.MP3 ? "audio/mpeg" : "audio/mp4";
-                playUri(appContext, activity, device, info, direct.getContent(), mimeType);
-            } else {
-                downloadAndServe(appContext, activity, device, info, sabr);
-            }
-        });
+        chooseSpeaker(activity, useLastSpeaker, onSpeakerChosen, device ->
+                resolve(appContext, info, false,
+                        (url, mimeType) ->
+                                playUri(appContext, activity, device, info, url, mimeType),
+                        throwable -> showError(appContext, throwable)));
+    }
+
+    /**
+     * Resolves a URL the speaker can play for this stream: the direct progressive
+     * URL if one exists, otherwise (YouTube SABR) download-to-cache + local serve.
+     * {@code onReady(url, mimeType)} fires on the main thread; may take as long as
+     * the download. Also used per-item by {@link SonosQueuePlayer}.
+     */
+    static void resolve(final Context appContext, final StreamInfo info, final boolean quiet,
+                        final BiConsumer<String, String> onReady,
+                        final Consumer<Throwable> onError) {
+        final AudioStream direct = pickStream(info, true);
+        if (direct != null) {
+            final String mimeType =
+                    direct.getFormat() == MediaFormat.MP3 ? "audio/mpeg" : "audio/mp4";
+            onReady.accept(direct.getContent(), mimeType);
+            return;
+        }
+        final AudioStream sabr = pickStream(info, false);
+        if (sabr == null) {
+            onError.accept(new IOException(
+                    appContext.getString(R.string.sonos_no_compatible_stream)));
+            return;
+        }
+        downloadAndServe(appContext, info, sabr, quiet, onReady, onError);
     }
 
     @Nullable
@@ -96,9 +116,9 @@ public final class SonosPlayer {
         }
     }
 
-    private static void chooseSpeaker(final Activity activity, final boolean useLastSpeaker,
-                                      @Nullable final Runnable onSpeakerChosen,
-                                      final Consumer<SonosDevice> callback) {
+    static void chooseSpeaker(final Activity activity, final boolean useLastSpeaker,
+                              @Nullable final Runnable onSpeakerChosen,
+                              final Consumer<SonosDevice> callback) {
         final Context appContext = activity.getApplicationContext();
         final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(appContext);
         final String lastIp = prefs.getString(PREF_LAST_IP, null);
@@ -149,12 +169,13 @@ public final class SonosPlayer {
         return new File(dir, "sonos-" + Math.abs(info.getUrl().hashCode()) + ".m4a");
     }
 
-    private static void downloadAndServe(final Context appContext, final Activity activity,
-                                         final SonosDevice device, final StreamInfo info,
-                                         final AudioStream sabrStream) {
+    private static void downloadAndServe(final Context appContext, final StreamInfo info,
+                                         final AudioStream sabrStream, final boolean quiet,
+                                         final BiConsumer<String, String> onReady,
+                                         final Consumer<Throwable> onError) {
         final File file = cacheFile(appContext, info);
         if (new File(file.getPath() + ".done").exists() && file.length() > 0) {
-            serveAndPlay(appContext, activity, device, info, file);
+            serve(appContext, info, file, onReady, onError);
             return;
         }
         try {
@@ -162,8 +183,14 @@ public final class SonosPlayer {
                     ? null : file.getParentFile().listFiles();
             if (stale != null) {
                 for (final File f : stale) {
-                    //noinspection ResultOfMethodCallIgnored
-                    f.delete();
+                    // in queue mode the current/next track is still being served — keep it
+                    final File base = f.getName().endsWith(".done")
+                            ? new File(f.getPath().substring(0, f.getPath().length() - 5))
+                            : f;
+                    if (!SonosStreamService.isServing(base)) {
+                        //noinspection ResultOfMethodCallIgnored
+                        f.delete();
+                    }
                 }
             }
             //noinspection ResultOfMethodCallIgnored
@@ -171,7 +198,7 @@ public final class SonosPlayer {
             final StoredFileHelper storage = new StoredFileHelper(appContext,
                     Uri.fromFile(file.getParentFile()), Uri.fromFile(file), "sonos");
             awaitDownload(appContext, file,
-                    () -> serveAndPlay(appContext, activity, device, info, file));
+                    () -> serve(appContext, info, file, onReady, onError), onError);
             DownloadManagerService.startMission(appContext,
                     new String[]{sabrStream.getContent()}, storage, 'a', 1, info.getUrl(),
                     null, null, 0,
@@ -179,14 +206,29 @@ public final class SonosPlayer {
                     HlsDownloadStreamHelper.buildResourceDeliveryMethods(sabrStream, null),
                     HlsDownloadStreamHelper.buildResourceManifestUrls(sabrStream, null),
                     HlsDownloadStreamHelper.buildResourceIsUrls(sabrStream, null));
-            Toast.makeText(appContext, R.string.sonos_downloading, Toast.LENGTH_LONG).show();
+            if (!quiet) {
+                Toast.makeText(appContext, R.string.sonos_downloading, Toast.LENGTH_LONG)
+                        .show();
+            }
         } catch (final IOException e) {
-            showError(appContext, e);
+            onError.accept(e);
+        }
+    }
+
+    private static void serve(final Context appContext, final StreamInfo info, final File file,
+                              final BiConsumer<String, String> onReady,
+                              final Consumer<Throwable> onError) {
+        try {
+            onReady.accept(SonosStreamService.start(appContext, file, info.getName(),
+                    info.getDuration()), "audio/mp4");
+        } catch (final IOException e) {
+            onError.accept(e);
         }
     }
 
     private static void awaitDownload(final Context appContext, final File file,
-                                      final Runnable onFinished) {
+                                      final Runnable onFinished,
+                                      final Consumer<Throwable> onError) {
         final Uri expectedUri = Uri.fromFile(file);
         final ServiceConnection connection = new ServiceConnection() {
             private DownloadManagerService.DownloadManagerBinder binder;
@@ -212,7 +254,7 @@ public final class SonosPlayer {
                     onFinished.run();
                 } else if (msg.what == DownloadManagerService.MESSAGE_ERROR) {
                     detach();
-                    showError(appContext, new IOException("audio download failed, code "
+                    onError.accept(new IOException("audio download failed, code "
                             + mission.errCode));
                 }
                 return false;
@@ -239,29 +281,21 @@ public final class SonosPlayer {
                 connection, Context.BIND_AUTO_CREATE);
     }
 
-    private static void serveAndPlay(final Context appContext, final Activity activity,
-                                     final SonosDevice device, final StreamInfo info,
-                                     final File file) {
-        final String serveUrl;
-        try {
-            serveUrl = SonosStreamService.start(appContext, file, info.getName(),
-                    info.getDuration());
-        } catch (final IOException e) {
-            showError(appContext, e);
-            return;
-        }
-        playUri(appContext, activity, device, info, serveUrl, "audio/mp4");
-    }
-
-    private static void playUri(final Context appContext, final Activity activity,
-                                final SonosDevice device, final StreamInfo info,
-                                final String url, final String mimeType) {
+    /** Persists what the control screen shows on open: speaker + current track. */
+    static void persistLast(final Context appContext, final SonosDevice device,
+                            final StreamInfo info) {
         PreferenceManager.getDefaultSharedPreferences(appContext).edit()
                 .putString(PREF_LAST_IP, device.getIp())
                 .putString(PREF_LAST_NAME, device.getRoomName())
                 .putString("sonos_last_title", info.getName())
                 .putLong("sonos_last_duration", info.getDuration())
                 .apply();
+    }
+
+    private static void playUri(final Context appContext, final Activity activity,
+                                final SonosDevice device, final StreamInfo info,
+                                final String url, final String mimeType) {
+        persistLast(appContext, device, info);
         //noinspection ResultOfMethodCallIgnored
         Completable.fromAction(() -> device.playUri(url, info.getName(),
                         info.getThumbnailUrl(), info.getDuration(), mimeType))

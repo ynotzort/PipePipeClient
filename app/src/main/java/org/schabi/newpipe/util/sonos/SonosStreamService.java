@@ -7,6 +7,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Handler;
@@ -32,23 +33,34 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.Enumeration;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Foreground service that serves one local audio file over HTTP so a Sonos
- * speaker on the LAN can stream it (used when the source has no direct URL,
+ * Foreground service that serves local audio files over HTTP so a Sonos
+ * speaker on the LAN can stream them (used when the source has no direct URL,
  * e.g. YouTube SABR — the audio is first downloaded to cache, then served).
+ * Serves the current track plus, in queue mode, the prefetched next one.
  */
 public final class SonosStreamService extends Service {
     private static final String TAG = "SonosStreamService";
     public static final int PORT = 8987;
     private static final String ACTION_STOP = "org.schabi.newpipe.sonos.STOP";
-    private static final String EXTRA_FILE = "file";
     private static final String EXTRA_TITLE = "title";
     private static final String EXTRA_DURATION = "duration";
     private static final int NOTIFICATION_ID = 64719;
 
+    /**
+     * Path → file currently servable. Static so callers can register/drop entries
+     * without binding; the service instance only owns the socket and lifecycle.
+     * Multiple entries allow a queued "next" track to be prefetched by the speaker
+     * while the current one is still served.
+     */
+    private static final Map<String, File> FILES = new ConcurrentHashMap<>();
+    private static final AtomicLong SEQUENCE = new AtomicLong();
+
     private ServerSocket serverSocket;
-    private File servedFile;
     private WifiManager.WifiLock wifiLock;
     private final Handler autoStopHandler = new Handler();
 
@@ -57,19 +69,44 @@ public final class SonosStreamService extends Service {
      *
      * <p>The URL path carries a fresh token every call: Sonos caches track metadata
      * (including duration) keyed by resource URL, so reusing a fixed path makes each
-     * new track inherit the previous track's duration. The server ignores the path and
-     * always serves the current file — fine for our single-active-playback model.</p>
+     * new track inherit the previous track's duration. The token also keys the
+     * path→file map.</p>
      */
     public static String start(final Context context, final File file, final String title,
                                final long durationSeconds) throws IOException {
         final String ip = getLocalIpAddress();
+        final String path = "/audio-" + System.currentTimeMillis()
+                + "-" + SEQUENCE.incrementAndGet() + ".m4a";
+        FILES.put(path, file);
         final Intent intent = new Intent(context, SonosStreamService.class)
-                .putExtra(EXTRA_FILE, file.getAbsolutePath())
                 .putExtra(EXTRA_TITLE, title)
                 .putExtra(EXTRA_DURATION, durationSeconds);
         context.startService(intent);
-        // ponytail: path ignored by the server; token only defeats Sonos's per-URL cache
-        return "http://" + ip + ":" + PORT + "/audio-" + System.currentTimeMillis() + ".m4a";
+        return "http://" + ip + ":" + PORT + path;
+    }
+
+    /** Whether the file is registered for serving (guards cache purges). */
+    public static boolean isServing(final File file) {
+        return FILES.containsValue(file);
+    }
+
+    /**
+     * Stops serving the given URL's path and deletes its file (+ ".done" marker),
+     * unless another path still serves the same file. No-op for foreign URLs.
+     */
+    public static void drop(final String url) {
+        final File file = FILES.remove(Uri.parse(url).getPath());
+        if (file != null && !FILES.containsValue(file)) {
+            //noinspection ResultOfMethodCallIgnored
+            file.delete();
+            //noinspection ResultOfMethodCallIgnored
+            new File(file.getPath() + ".done").delete();
+        }
+    }
+
+    /** Stops the service (and with it, via onDestroy, all serving and cached files). */
+    public static void shutdown(final Context context) {
+        context.stopService(new Intent(context, SonosStreamService.class));
     }
 
     private static String getLocalIpAddress() throws IOException {
@@ -92,7 +129,6 @@ public final class SonosStreamService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        servedFile = new File(intent.getStringExtra(EXTRA_FILE));
         final String title = intent.getStringExtra(EXTRA_TITLE);
         final long duration = intent.getLongExtra(EXTRA_DURATION, 0);
 
@@ -141,7 +177,7 @@ public final class SonosStreamService extends Service {
 
     private void startServer() {
         if (serverSocket != null && !serverSocket.isClosed()) {
-            return; // already serving; servedFile was updated above
+            return; // already serving; FILES was updated by start()
         }
         final Thread thread = new Thread(() -> {
             try (ServerSocket server = new ServerSocket(PORT)) {
@@ -159,11 +195,14 @@ public final class SonosStreamService extends Service {
     }
 
     private void handleClient(final Socket client) {
-        final File file = servedFile;
         try (Socket socket = client) {
             final BufferedReader reader = new BufferedReader(
                     new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
             final String requestLine = reader.readLine();
+            final String[] requestParts = requestLine == null
+                    ? null : requestLine.split(" ");
+            final File file = requestParts != null && requestParts.length > 1
+                    ? FILES.get(requestParts[1]) : null;
             long rangeStart = 0;
             long rangeEnd = -1;
             String line;
@@ -236,15 +275,16 @@ public final class SonosStreamService extends Service {
         if (wifiLock != null && wifiLock.isHeld()) {
             wifiLock.release();
         }
-        // The file is only needed while the speaker can still fetch bytes, i.e. while
+        // Files are only needed while the speaker can still fetch bytes, i.e. while
         // this service runs. ponytail: drops the replay-same-video cache hit; replay
         // re-downloads, which is acceptable.
-        if (servedFile != null) {
+        for (final File file : FILES.values()) {
             //noinspection ResultOfMethodCallIgnored
-            servedFile.delete();
+            file.delete();
             //noinspection ResultOfMethodCallIgnored
-            new File(servedFile.getPath() + ".done").delete();
+            new File(file.getPath() + ".done").delete();
         }
+        FILES.clear();
         super.onDestroy();
     }
 

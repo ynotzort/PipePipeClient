@@ -2,7 +2,9 @@ package org.schabi.newpipe.util.sonos;
 
 import android.content.SharedPreferences;
 import android.os.Bundle;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.ListView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -16,6 +18,8 @@ import org.schabi.newpipe.util.Localization;
 import org.schabi.newpipe.util.ThemeHelper;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
@@ -31,15 +35,19 @@ import io.reactivex.rxjava3.schedulers.Schedulers;
  */
 public final class SonosControlActivity extends AppCompatActivity {
     private final CompositeDisposable disposables = new CompositeDisposable();
+    private SharedPreferences prefs;
     private SonosDevice device;
+    private TextView titleView;
     private TextView stateView;
     private TextView timeLabel;
     private SeekBar positionBar;
     private SeekBar volumeBar;
+    private ListView queueList;
     private Button clearCacheButton;
     private boolean draggingPosition;
     private boolean draggingVolume;
     private long knownDuration;
+    private int shownQueueIndex = -2;
 
     @Override
     protected void onCreate(@Nullable final Bundle savedInstanceState) {
@@ -49,7 +57,7 @@ public final class SonosControlActivity extends AppCompatActivity {
         setContentView(R.layout.activity_sonos_control);
         setTitle(R.string.play_on_sonos_title);
 
-        final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        prefs = PreferenceManager.getDefaultSharedPreferences(this);
         final String ip = prefs.getString("sonos_last_ip", null);
         if (ip == null) {
             Toast.makeText(this, R.string.sonos_no_speaker_yet, Toast.LENGTH_LONG).show();
@@ -62,12 +70,13 @@ public final class SonosControlActivity extends AppCompatActivity {
         knownDuration = prefs.getLong("sonos_last_duration", 0);
 
         ((TextView) findViewById(R.id.sonos_room_name)).setText(device.getRoomName());
-        ((TextView) findViewById(R.id.sonos_track_title))
-                .setText(prefs.getString("sonos_last_title", ""));
+        titleView = findViewById(R.id.sonos_track_title);
+        titleView.setText(prefs.getString("sonos_last_title", ""));
         stateView = findViewById(R.id.sonos_state);
         timeLabel = findViewById(R.id.sonos_time_label);
         positionBar = findViewById(R.id.sonos_position_bar);
         volumeBar = findViewById(R.id.sonos_volume_bar);
+        queueList = findViewById(R.id.sonos_queue_list);
         clearCacheButton = findViewById(R.id.sonos_btn_clear_cache);
 
         findViewById(R.id.sonos_btn_play).setOnClickListener(v -> run(device::play));
@@ -152,6 +161,10 @@ public final class SonosControlActivity extends AppCompatActivity {
         final String state = (String) status[0];
         final long[] position = (long[]) status[1];
         final int volume = (int) status[2];
+        // Re-read per tick: the queue player updates these prefs on track advance.
+        titleView.setText(prefs.getString("sonos_last_title", ""));
+        knownDuration = prefs.getLong("sonos_last_duration", 0);
+        updateQueue();
         switch (state) {
             case "PLAYING":
             case "TRANSITIONING":
@@ -179,6 +192,30 @@ public final class SonosControlActivity extends AppCompatActivity {
         if (!draggingVolume) {
             volumeBar.setProgress(volume);
         }
+    }
+
+    /** Renders the queue-player playlist; rebuilds only when the playing index moves. */
+    private void updateQueue() {
+        final List<String> titles = SonosQueuePlayer.queueTitles();
+        final int index = SonosQueuePlayer.queueIndex();
+        if (titles == null) {
+            if (queueList.getAdapter() != null) {
+                queueList.setAdapter(null);
+            }
+            shownQueueIndex = -2;
+            return;
+        }
+        if (index == shownQueueIndex) {
+            return;
+        }
+        shownQueueIndex = index;
+        final List<String> rows = new ArrayList<>(titles.size());
+        for (int i = 0; i < titles.size(); i++) {
+            rows.add((i == index ? "▶ " : "") + titles.get(i));
+        }
+        queueList.setAdapter(new ArrayAdapter<>(this,
+                android.R.layout.simple_list_item_1, rows));
+        queueList.setSelection(Math.max(0, index - 1));
     }
 
     private static String formatTimes(final long position, final long duration) {

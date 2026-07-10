@@ -55,6 +55,25 @@ public final class SonosDevice implements Serializable {
         play();
     }
 
+    /**
+     * Queues the track to play after the current one ends; the speaker
+     * auto-advances near-gapless.
+     */
+    public void setNextUri(final String uri, final String title,
+                           @Nullable final String thumbnailUrl,
+                           final long durationSeconds, final String mimeType) throws IOException {
+        final String didl = buildDidl(uri, title, thumbnailUrl, durationSeconds, mimeType);
+        soap("AVTransport", AV_TRANSPORT_URN, "SetNextAVTransportURI",
+                "<NextURI>" + xmlEscape(uri) + "</NextURI>"
+                        + "<NextURIMetaData>" + xmlEscape(didl) + "</NextURIMetaData>");
+    }
+
+    /** @return URI of the track currently loaded on the speaker ("" if none). */
+    public String getTrackUri() throws IOException {
+        final String body = soap("AVTransport", AV_TRANSPORT_URN, "GetPositionInfo", "");
+        return xmlUnescape(extractTag(body, "TrackURI"));
+    }
+
     public void play() throws IOException {
         soap("AVTransport", AV_TRANSPORT_URN, "Play", "<Speed>1</Speed>");
     }
@@ -171,6 +190,11 @@ public final class SonosDevice implements Serializable {
     private static String xmlEscape(final String s) {
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 .replace("\"", "&quot;").replace("'", "&apos;");
+    }
+
+    private static String xmlUnescape(final String s) {
+        return s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"")
+                .replace("&apos;", "'").replace("&amp;", "&");
     }
 
     @NonNull
