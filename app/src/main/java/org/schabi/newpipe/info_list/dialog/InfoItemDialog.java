@@ -346,6 +346,7 @@ public final class InfoItemDialog {
             addAllEntries(
                     StreamDialogDefaultEntry.DOWNLOAD,
                     StreamDialogDefaultEntry.APPEND_PLAYLIST,
+                    StreamDialogDefaultEntry.PLAY_ON_SONOS,
                     StreamDialogDefaultEntry.SHARE,
                     StreamDialogDefaultEntry.OPEN_IN_BROWSER
             );

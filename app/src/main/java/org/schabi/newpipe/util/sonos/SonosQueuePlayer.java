@@ -8,6 +8,7 @@ import android.util.Log;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
 
 import org.schabi.newpipe.R;
 import org.schabi.newpipe.extractor.stream.StreamInfo;
@@ -174,10 +175,40 @@ public final class SonosQueuePlayer {
         }
     }
 
-    /** Appends a stream to the running queue, or starts a new queue playing it. */
-    public static void enqueue(final Activity activity, final StreamInfo info) {
-        final Item item = new StreamItem(info.getServiceId(), info.getUrl(),
-                info.getName(), info.getDuration());
+    /**
+     * "Play on Sonos" for a single stream: with no queue running it starts a
+     * fresh 1-item queue; with one it asks Play now / Add to queue.
+     */
+    public static void playOrEnqueue(final Activity activity, final StreamInfo info) {
+        playOrEnqueueItem(activity, new StreamItem(info.getServiceId(), info.getUrl(),
+                info.getName(), info.getDuration()));
+    }
+
+    /** Same, from a long-press context menu's {@link PlayQueueItem}. */
+    public static void playOrEnqueue(final Activity activity, final PlayQueueItem queueItem) {
+        playOrEnqueueItem(activity, new StreamItem(queueItem));
+    }
+
+    private static void playOrEnqueueItem(final Activity activity, final Item item) {
+        if (session == null) {
+            enqueueItem(activity, item);
+            return;
+        }
+        new AlertDialog.Builder(activity)
+                .setItems(new CharSequence[]{
+                        activity.getString(R.string.sonos_play_now),
+                        activity.getString(R.string.sonos_add_to_queue)},
+                        (dialog, which) -> {
+                            if (which == 0) {
+                                stop(); // fresh 1-item queue replaces playback
+                            }
+                            enqueueItem(activity, item);
+                        })
+                .show();
+    }
+
+    /** Appends to the running queue, or starts a new queue playing the item. */
+    private static void enqueueItem(final Activity activity, final Item item) {
         if (session == null) {
             final List<Item> single = new ArrayList<>();
             single.add(item);

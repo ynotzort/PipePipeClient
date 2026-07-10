@@ -656,23 +656,7 @@ public final class VideoDetailFragment
             SonosPlayer.play(activity, currentInfo, useLastSpeaker, null);
             return;
         }
-        if (!SonosQueuePlayer.hasSession()) {
-            SonosQueuePlayer.enqueue(activity, currentInfo); // starts a fresh queue
-            return;
-        }
-        new AlertDialog.Builder(activity)
-                .setItems(new CharSequence[]{
-                        getString(R.string.sonos_play_now),
-                        getString(R.string.sonos_add_to_queue)},
-                        (dialog, which) -> {
-                            if (which == 0) {
-                                SonosQueuePlayer.stop();
-                                SonosQueuePlayer.enqueue(activity, currentInfo);
-                            } else {
-                                SonosQueuePlayer.enqueue(activity, currentInfo);
-                            }
-                        })
-                .show();
+        SonosQueuePlayer.playOrEnqueue(activity, currentInfo);
     }
 
 

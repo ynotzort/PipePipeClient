@@ -23,8 +23,11 @@ import org.schabi.newpipe.local.dialog.PlaylistDialog;
 import org.schabi.newpipe.local.history.HistoryRecordManager;
 import org.schabi.newpipe.util.NavigationHelper;
 import org.schabi.newpipe.util.ServiceHelper;
+import org.schabi.newpipe.util.StreamTypeUtil;
 import org.schabi.newpipe.util.external_communication.KoreUtils;
 import org.schabi.newpipe.util.external_communication.ShareUtils;
+import org.schabi.newpipe.util.sonos.SonosPlayer;
+import org.schabi.newpipe.util.sonos.SonosQueuePlayer;
 
 import java.util.Collections;
 import java.util.HashSet;
@@ -115,6 +118,23 @@ public enum StreamDialogDefaultEntry {
                 )
         )
     ),
+
+    /**
+     * Plays the stream on a Sonos speaker: live streams relay directly, anything
+     * else goes through the queue player (offers Play now / Add to queue when a
+     * queue session is running).
+     */
+    PLAY_ON_SONOS(R.string.sonos_play_playlist, (fragment, item) -> {
+        if (StreamTypeUtil.isLiveStream(item.getStreamType())) {
+            fetchStreamInfoAndSaveToDatabase(fragment.requireContext(), item.getServiceId(),
+                    item.getUrl(), info ->
+                            SonosPlayer.play(fragment.requireActivity(), info, false, null));
+        } else {
+            fetchItemInfoIfSparse(fragment.requireContext(), item, singlePlayQueue ->
+                    SonosQueuePlayer.playOrEnqueue(fragment.requireActivity(),
+                            singlePlayQueue.getStreams().get(0)));
+        }
+    }),
 
     PLAY_WITH_KODI(R.string.play_with_kodi_title, (fragment, item) -> {
         final Uri videoUrl = Uri.parse(item.getUrl());
