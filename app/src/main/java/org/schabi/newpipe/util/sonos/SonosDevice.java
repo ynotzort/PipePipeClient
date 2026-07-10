@@ -55,6 +55,17 @@ public final class SonosDevice implements Serializable {
         play();
     }
 
+    /** Live/web-radio variant: audioBroadcast DIDL class, no duration. */
+    public void playLiveUri(final String uri, final String title,
+                            @Nullable final String thumbnailUrl, final String mimeType)
+            throws IOException {
+        final String didl = buildDidl(uri, title, thumbnailUrl, -1, mimeType);
+        soap("AVTransport", AV_TRANSPORT_URN, "SetAVTransportURI",
+                "<CurrentURI>" + xmlEscape(uri) + "</CurrentURI>"
+                        + "<CurrentURIMetaData>" + xmlEscape(didl) + "</CurrentURIMetaData>");
+        play();
+    }
+
     /**
      * Queues the track to play after the current one ends; the speaker
      * auto-advances near-gapless.
@@ -162,10 +173,11 @@ public final class SonosDevice implements Serializable {
         }
     }
 
+    /** {@code durationSeconds < 0} = live: audioBroadcast class, no duration attribute. */
     private static String buildDidl(final String uri, final String title,
                                     @Nullable final String thumbnailUrl,
                                     final long durationSeconds, final String mimeType) {
-        final String duration = formatTime(durationSeconds);
+        final boolean live = durationSeconds < 0;
         return "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" "
                 + "xmlns:dc=\"http://purl.org/dc/elements/1.1/\" "
                 + "xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">"
@@ -174,8 +186,10 @@ public final class SonosDevice implements Serializable {
                 + (thumbnailUrl != null
                         ? "<upnp:albumArtURI>" + xmlEscape(thumbnailUrl) + "</upnp:albumArtURI>"
                         : "")
-                + "<upnp:class>object.item.audioItem.musicTrack</upnp:class>"
-                + "<res duration=\"" + duration + "\" protocolInfo=\"http-get:*:"
+                + "<upnp:class>object.item.audioItem."
+                + (live ? "audioBroadcast" : "musicTrack") + "</upnp:class>"
+                + "<res " + (live ? "" : "duration=\"" + formatTime(durationSeconds) + "\" ")
+                + "protocolInfo=\"http-get:*:"
                 + mimeType + ":*\">" + xmlEscape(uri) + "</res>"
                 + "</item></DIDL-Lite>";
     }

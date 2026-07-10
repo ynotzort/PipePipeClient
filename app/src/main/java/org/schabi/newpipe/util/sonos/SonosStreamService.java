@@ -17,11 +17,16 @@ import android.util.Log;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 
+import com.arthenica.ffmpegkit.FFmpegKit;
+import com.arthenica.ffmpegkit.FFmpegKitConfig;
+import com.arthenica.ffmpegkit.FFmpegSession;
+
 import org.schabi.newpipe.R;
 
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -34,7 +39,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.Enumeration;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -49,6 +57,8 @@ public final class SonosStreamService extends Service {
     private static final String ACTION_STOP = "org.schabi.newpipe.sonos.STOP";
     private static final String EXTRA_TITLE = "title";
     private static final String EXTRA_DURATION = "duration";
+    private static final String EXTRA_LIVE = "live";
+    private static final long LIVE_IDLE_STOP_MS = 1800 * 1000L;
     private static final int NOTIFICATION_ID = 64719;
 
     /**
@@ -58,11 +68,16 @@ public final class SonosStreamService extends Service {
      * while the current one is still served.
      */
     private static final Map<String, File> FILES = new ConcurrentHashMap<>();
+    /** Path → HLS variant URL for endless live relays (ffmpeg remux, no file). */
+    private static final Map<String, String> LIVE = new ConcurrentHashMap<>();
     private static final AtomicLong SEQUENCE = new AtomicLong();
 
     private ServerSocket serverSocket;
     private WifiManager.WifiLock wifiLock;
     private final Handler autoStopHandler = new Handler();
+    private final AtomicInteger liveClients = new AtomicInteger();
+    /** Running live-relay ffmpeg session ids, cancelled on destroy. */
+    private final Set<Long> liveSessions = ConcurrentHashMap.newKeySet();
 
     /**
      * Starts serving the given file and returns the URL a Sonos speaker can fetch it from.
@@ -88,6 +103,24 @@ public final class SonosStreamService extends Service {
         return "http://" + ip + ":" + PORT + path;
     }
 
+    /**
+     * Starts an endless live relay for the given HLS variant and returns the URL
+     * the speaker can stream from. Each GET on it spawns its own ffmpeg pulling
+     * the variant, dropping video and remuxing the AAC to ADTS (no re-encode).
+     * Unique path per call for the same metadata-cache reason as {@link #start}.
+     */
+    public static String startLive(final Context context, final String hlsVariantUrl,
+                                   final String title) throws IOException {
+        final String ip = getLocalIpAddress();
+        final String path = "/live-" + System.currentTimeMillis()
+                + "-" + SEQUENCE.incrementAndGet() + ".aac";
+        LIVE.put(path, hlsVariantUrl);
+        context.startService(new Intent(context, SonosStreamService.class)
+                .putExtra(EXTRA_TITLE, title)
+                .putExtra(EXTRA_LIVE, true));
+        return "http://" + ip + ":" + PORT + path;
+    }
+
     /** Whether the file is registered for serving (guards cache purges). */
     public static boolean isServing(final File file) {
         return FILES.containsValue(file);
@@ -100,6 +133,7 @@ public final class SonosStreamService extends Service {
      */
     public static void drop(final String url) {
         FILES.remove(Uri.parse(url).getPath());
+        LIVE.remove(Uri.parse(url).getPath());
     }
 
     /** Stops the service (and with it, via onDestroy, all serving and cached files). */
@@ -135,9 +169,13 @@ public final class SonosStreamService extends Service {
         startServer();
 
         // ponytail: no end-of-playback detection — stop serving after duration + generous
-        // slack (covers pauses); poll GetTransportInfo instead if this ever bites
+        // slack (covers pauses); poll GetTransportInfo instead if this ever bites.
+        // Live is endless: the timer here only covers "speaker never connected";
+        // while a live client streams it's cancelled, and re-armed on disconnect.
         autoStopHandler.removeCallbacksAndMessages(null);
-        autoStopHandler.postDelayed(this::stopSelf, (duration + 1800) * 1000L);
+        autoStopHandler.postDelayed(this::stopSelf,
+                intent.getBooleanExtra(EXTRA_LIVE, false)
+                        ? LIVE_IDLE_STOP_MS : (duration + 1800) * 1000L);
         return START_NOT_STICKY;
     }
 
@@ -216,8 +254,10 @@ public final class SonosStreamService extends Service {
             final String requestLine = reader.readLine();
             final String[] requestParts = requestLine == null
                     ? null : requestLine.split(" ");
-            final File file = requestParts != null && requestParts.length > 1
-                    ? FILES.get(requestParts[1]) : null;
+            final String path = requestParts != null && requestParts.length > 1
+                    ? requestParts[1] : null;
+            final File file = path != null ? FILES.get(path) : null;
+            final String liveUrl = path != null ? LIVE.get(path) : null;
             long rangeStart = 0;
             long rangeEnd = -1;
             String line;
@@ -233,6 +273,10 @@ public final class SonosStreamService extends Service {
                 }
             }
             final OutputStream out = socket.getOutputStream();
+            if (liveUrl != null) {
+                serveLive(out, liveUrl, requestLine.startsWith("HEAD"));
+                return;
+            }
             if (requestLine == null || file == null || !file.isFile()) {
                 out.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"
                         .getBytes(StandardCharsets.US_ASCII));
@@ -279,9 +323,80 @@ public final class SonosStreamService extends Service {
         }
     }
 
+    /**
+     * Endless live relay (proven end-to-end via live_relay.py against the real
+     * speaker): ffmpeg pulls the muxed HLS variant, drops video and remuxes the
+     * AAC-LC track to ADTS into a named pipe; the pipe is streamed to the client
+     * as a web-radio-style response — no Content-Length, no Range, connection
+     * open until either side quits. Sonos double-connects (probe GET dropped
+     * instantly, then the real one); each GET gets its own ffmpeg, so that's fine.
+     */
+    private void serveLive(final OutputStream out, final String hlsUrl, final boolean headOnly)
+            throws IOException {
+        out.write(("HTTP/1.0 200 OK\r\n"
+                + "Content-Type: audio/aac\r\n"
+                + "icy-name: PipePipe Live\r\n"
+                + "Connection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+        if (headOnly) {
+            return;
+        }
+        // synchronized: concurrent first-use calls race on creating the pipes dir
+        // inside ffmpeg-kit (mkdirs loser gets null) — Sonos double-connects
+        final String pipe;
+        synchronized (LIVE) {
+            pipe = FFmpegKitConfig.registerNewFFmpegPipe(this);
+        }
+        if (pipe == null) {
+            throw new IOException("ffmpeg pipe creation failed");
+        }
+        liveClients.incrementAndGet();
+        autoStopHandler.removeCallbacksAndMessages(null);
+        final AtomicBoolean readerOpened = new AtomicBoolean();
+        // -y is required: the output "file" (the just-created FIFO) already exists,
+        // and without it ffmpeg asks to overwrite and exits — empty stream, STOPPED
+        final FFmpegSession session = FFmpegKit.executeWithArgumentsAsync(new String[]{
+                "-y", "-loglevel", "error", "-i", hlsUrl, "-vn", "-c:a", "copy",
+                "-f", "adts", pipe}, completed -> {
+            Log.i(TAG, "live ffmpeg exited: " + completed.getReturnCode()
+                    + " " + completed.getOutput());
+            // FIFO open() for reading blocks until a writer appears — if ffmpeg
+            // died before ever opening its output (bad/expired URL), pair the
+            // stuck reader below with a throwaway writer so it sees instant EOF
+            if (!readerOpened.get() && new File(pipe).exists()) {
+                try {
+                    new FileOutputStream(pipe).close();
+                } catch (final IOException ignored) {
+                }
+            }
+        });
+        liveSessions.add(session.getSessionId());
+        try (FileInputStream in = new FileInputStream(pipe)) {
+            readerOpened.set(true);
+            final byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                out.write(buffer, 0, read);
+            }
+        } finally {
+            liveSessions.remove(session.getSessionId());
+            FFmpegKit.cancel(session.getSessionId());
+            FFmpegKitConfig.closeFFmpegPipe(pipe);
+            Log.d(TAG, "live client gone, ffmpeg cancelled");
+            if (liveClients.decrementAndGet() == 0) {
+                // ponytail: no STOPPED-poll teardown — stop 30 min after the
+                // speaker lets go (covers reconnects; user Stop is immediate)
+                autoStopHandler.postDelayed(this::stopSelf, LIVE_IDLE_STOP_MS);
+            }
+        }
+    }
+
     @Override
     public void onDestroy() {
         autoStopHandler.removeCallbacksAndMessages(null);
+        // ffmpeg exit → pipe EOF → relay thread closes its socket and cleans up
+        for (final long sessionId : liveSessions) {
+            FFmpegKit.cancel(sessionId);
+        }
         if (serverSocket != null) {
             try {
                 serverSocket.close();
@@ -294,6 +409,7 @@ public final class SonosStreamService extends Service {
         // Files stay in cache for instant replays; the size-capped LRU trim in
         // SonosPlayer (and Android's cache-dir eviction) bounds disk usage.
         FILES.clear();
+        LIVE.clear();
         super.onDestroy();
     }
 

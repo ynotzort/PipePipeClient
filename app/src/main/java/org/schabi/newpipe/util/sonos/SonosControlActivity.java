@@ -235,6 +235,8 @@ public final class SonosControlActivity extends AppCompatActivity {
         // Re-read per tick: the queue player updates these prefs on track advance.
         titleView.setText(prefs.getString(SonosPlayer.PREF_LAST_TITLE, ""));
         knownDuration = prefs.getLong(SonosPlayer.PREF_LAST_DURATION, 0);
+        final boolean live = prefs.getBoolean(SonosPlayer.PREF_LAST_LIVE, false);
+        positionBar.setVisibility(live ? View.GONE : View.VISIBLE);
         updateQueue();
         switch (state) {
             case "PLAYING":
@@ -250,15 +252,20 @@ public final class SonosControlActivity extends AppCompatActivity {
             default:
                 stateView.setText(state);
         }
-        // Prefer the real duration (from StreamInfo); fall back to the speaker's
-        // report only if we never stored one.
-        if (knownDuration <= 0) {
-            knownDuration = position[1];
-        }
-        positionBar.setMax((int) Math.max(1, knownDuration));
-        if (!draggingPosition) {
-            positionBar.setProgress((int) Math.min(position[0], knownDuration));
-            timeLabel.setText(formatTimes(position[0], knownDuration));
+        if (live) {
+            timeLabel.setText(getString(R.string.duration_live) + " · "
+                    + SonosDevice.formatTime(position[0]));
+        } else {
+            // Prefer the real duration (from StreamInfo); fall back to the speaker's
+            // report only if we never stored one.
+            if (knownDuration <= 0) {
+                knownDuration = position[1];
+            }
+            positionBar.setMax((int) Math.max(1, knownDuration));
+            if (!draggingPosition) {
+                positionBar.setProgress((int) Math.min(position[0], knownDuration));
+                timeLabel.setText(formatTimes(position[0], knownDuration));
+            }
         }
         if (!draggingVolume) {
             volumeBar.setProgress(volume);

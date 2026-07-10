@@ -26,14 +26,24 @@ import org.schabi.newpipe.extractor.stream.AudioStream;
 import org.schabi.newpipe.extractor.stream.DeliveryMethod;
 import org.schabi.newpipe.extractor.stream.StreamInfo;
 import org.schabi.newpipe.streams.io.StoredFileHelper;
+import org.schabi.newpipe.util.StreamTypeUtil;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -65,6 +75,8 @@ public final class SonosPlayer {
     static final String PREF_LAST_NAME = "sonos_last_name";
     static final String PREF_LAST_TITLE = "sonos_last_title";
     static final String PREF_LAST_DURATION = "sonos_last_duration";
+    /** True while the last-started playback is an endless live relay (no seek). */
+    static final String PREF_LAST_LIVE = "sonos_last_live";
     /** Cache size cap in MB; set from the control screen's "Cache limit" menu. */
     static final String PREF_CACHE_MAX_MB = "sonos_cache_max_mb";
     static final long DEFAULT_CACHE_MAX_MB = 1024;
@@ -76,6 +88,19 @@ public final class SonosPlayer {
                             final boolean useLastSpeaker,
                             @Nullable final Runnable onSpeakerChosen) {
         final Context appContext = activity.getApplicationContext();
+        if (StreamTypeUtil.isLiveStream(info.getStreamType())) {
+            // live = endless, so download-then-serve can't work; relay the HLS
+            // audio instead (see SonosStreamService.startLive)
+            if (info.getHlsUrl() == null || info.getHlsUrl().isEmpty()) {
+                Toast.makeText(appContext, R.string.sonos_no_compatible_stream,
+                        Toast.LENGTH_LONG).show();
+                settle(onSpeakerChosen);
+                return;
+            }
+            chooseSpeaker(activity, useLastSpeaker, onSpeakerChosen, device ->
+                    playLive(appContext, activity, device, info));
+            return;
+        }
         if (pickStream(info, true) == null && pickStream(info, false) == null) {
             Toast.makeText(appContext, R.string.sonos_no_compatible_stream, Toast.LENGTH_LONG)
                     .show();
@@ -499,11 +524,18 @@ public final class SonosPlayer {
 
     static void persistLast(final Context appContext, final SonosDevice device,
                             final String title, final long durationSeconds) {
+        persistLast(appContext, device, title, durationSeconds, false);
+    }
+
+    private static void persistLast(final Context appContext, final SonosDevice device,
+                                    final String title, final long durationSeconds,
+                                    final boolean live) {
         PreferenceManager.getDefaultSharedPreferences(appContext).edit()
                 .putString(PREF_LAST_IP, device.getIp())
                 .putString(PREF_LAST_NAME, device.getRoomName())
                 .putString(PREF_LAST_TITLE, title)
                 .putLong(PREF_LAST_DURATION, durationSeconds)
+                .putBoolean(PREF_LAST_LIVE, live)
                 .apply();
     }
 
@@ -525,16 +557,89 @@ public final class SonosPlayer {
                         thumbnailUrl, durationSeconds, mimeType))
                 .subscribeOn(Schedulers.io())
                 .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(() -> {
-                    Toast.makeText(appContext,
-                            appContext.getString(R.string.sonos_playing_toast,
-                                    device.getRoomName()),
-                            Toast.LENGTH_SHORT).show();
-                    if (isUsable(activity)) {
-                        activity.startActivity(
-                                new Intent(activity, SonosControlActivity.class));
-                    }
-                }, throwable -> showError(appContext, throwable));
+                .subscribe(() -> announcePlaying(appContext, activity, device),
+                        throwable -> showError(appContext, throwable));
+    }
+
+    /**
+     * Live streams have no downloadable end — instead the phone relays them:
+     * pick a muxed HLS variant carrying AAC-LC (YouTube live has no audio-only
+     * rendition), and {@link SonosStreamService#startLive} remuxes its audio to
+     * an endless ADTS stream the speaker treats as web radio.
+     */
+    private static void playLive(final Context appContext, final Activity activity,
+                                 final SonosDevice device, final StreamInfo info) {
+        persistLast(appContext, device, info.getName(), 0, true);
+        //noinspection ResultOfMethodCallIgnored
+        Completable.fromAction(() -> device.playLiveUri(
+                        SonosStreamService.startLive(appContext,
+                                pickLiveVariant(info.getHlsUrl()), info.getName()),
+                        info.getName(), info.getThumbnailUrl(), "audio/aac"))
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe(() -> announcePlaying(appContext, activity, device),
+                        throwable -> showError(appContext, throwable));
+    }
+
+    /**
+     * Picks the variant to relay from an HLS master playlist: lowest bandwidth
+     * whose CODECS contain AAC-LC ("mp4a.40.2" — copies straight to ADTS; the
+     * lower itags carry HE-AAC the speaker may not decode), else lowest overall.
+     * Returns the input unchanged if it's already a media playlist.
+     */
+    static String pickLiveVariant(final String masterUrl) throws IOException {
+        final List<String> lines = new ArrayList<>();
+        final HttpURLConnection connection =
+                (HttpURLConnection) new URL(masterUrl).openConnection();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                connection.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                lines.add(line.trim());
+            }
+        } finally {
+            connection.disconnect();
+        }
+        final Pattern bandwidthPattern = Pattern.compile("BANDWIDTH=(\\d+)");
+        String bestUrl = null;
+        long bestBandwidth = Long.MAX_VALUE;
+        boolean bestIsAacLc = false;
+        for (int i = 0; i < lines.size() - 1; i++) {
+            if (!lines.get(i).startsWith("#EXT-X-STREAM-INF:")) {
+                continue;
+            }
+            String uri = null;
+            for (int j = i + 1; j < lines.size(); j++) {
+                if (!lines.get(j).isEmpty() && !lines.get(j).startsWith("#")) {
+                    uri = lines.get(j);
+                    break;
+                }
+            }
+            if (uri == null) {
+                continue;
+            }
+            final Matcher matcher = bandwidthPattern.matcher(lines.get(i));
+            final long bandwidth = matcher.find()
+                    ? Long.parseLong(matcher.group(1)) : Long.MAX_VALUE;
+            final boolean aacLc = lines.get(i).contains("mp4a.40.2");
+            if (bestUrl == null || (aacLc && !bestIsAacLc)
+                    || (aacLc == bestIsAacLc && bandwidth < bestBandwidth)) {
+                bestUrl = new URL(new URL(masterUrl), uri).toString();
+                bestBandwidth = bandwidth;
+                bestIsAacLc = aacLc;
+            }
+        }
+        return bestUrl != null ? bestUrl : masterUrl;
+    }
+
+    private static void announcePlaying(final Context appContext, final Activity activity,
+                                        final SonosDevice device) {
+        Toast.makeText(appContext,
+                appContext.getString(R.string.sonos_playing_toast, device.getRoomName()),
+                Toast.LENGTH_SHORT).show();
+        if (isUsable(activity)) {
+            activity.startActivity(new Intent(activity, SonosControlActivity.class));
+        }
     }
 
     private static void showError(final Context appContext, final Throwable throwable) {
