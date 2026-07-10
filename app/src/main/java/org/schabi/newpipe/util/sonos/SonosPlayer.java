@@ -6,7 +6,10 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
+import android.database.Cursor;
+import android.media.MediaMetadataRetriever;
 import android.net.Uri;
+import android.provider.OpenableColumns;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -24,7 +27,10 @@ import org.schabi.newpipe.extractor.stream.StreamInfo;
 import org.schabi.newpipe.streams.io.StoredFileHelper;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.function.BiConsumer;
@@ -76,6 +82,122 @@ public final class SonosPlayer {
                         (url, mimeType) ->
                                 playUri(appContext, activity, device, info, url, mimeType),
                         throwable -> showError(appContext, throwable)));
+    }
+
+    /**
+     * Plays a local audio file (content:// or file:// URI, e.g. from a file manager
+     * or share sheet) on a Sonos speaker: pick speaker → copy into cache → serve.
+     * The speaker must support the format natively (S2: MP3/AAC/FLAC/WAV/OGG;
+     * Opus/WebM will fail with a Sonos error — no transcoding).
+     */
+    public static void playLocalFile(final Activity activity, final Uri uri,
+                                     @Nullable final Runnable onSpeakerChosen) {
+        final Context appContext = activity.getApplicationContext();
+        chooseSpeaker(activity, false, onSpeakerChosen, device ->
+                //noinspection ResultOfMethodCallIgnored
+                Single.fromCallable(() -> importLocalFile(appContext, uri))
+                        .subscribeOn(Schedulers.io())
+                        .observeOn(AndroidSchedulers.mainThread())
+                        .subscribe(item -> serve(appContext, item.title, item.durationSeconds,
+                                        item.mimeType, item.file,
+                                        (url, mimeType) -> playUri(appContext, activity, device,
+                                                item.title, null, item.durationSeconds,
+                                                url, mimeType),
+                                        throwable -> showError(appContext, throwable)),
+                                throwable -> showError(appContext, throwable)));
+    }
+
+    static final class LocalItem {
+        final File file;
+        final String title;
+        final long durationSeconds;
+        final String mimeType;
+
+        LocalItem(final File file, final String title, final long durationSeconds,
+                  final String mimeType) {
+            this.file = file;
+            this.title = title;
+            this.durationSeconds = durationSeconds;
+            this.mimeType = mimeType;
+        }
+    }
+
+    /** Reads metadata and copies the URI's content into the Sonos cache (io thread). */
+    static LocalItem importLocalFile(final Context appContext, final Uri uri)
+            throws IOException {
+        String mime = appContext.getContentResolver().getType(uri);
+        String title = null;
+        long durationSeconds = 0;
+        final MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(appContext, uri);
+            title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE);
+            final String durationMs =
+                    retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+            if (durationMs != null) {
+                durationSeconds = Long.parseLong(durationMs) / 1000;
+            }
+            if (mime == null) {
+                mime = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE);
+            }
+        } catch (final RuntimeException ignored) {
+            // unreadable metadata — play anyway with the fallbacks below
+        } finally {
+            retriever.release();
+        }
+        if (title == null || title.isEmpty()) {
+            title = displayName(appContext, uri);
+        }
+        if (mime == null) {
+            mime = "audio/mpeg";
+        }
+
+        final File dir = new File(appContext.getCacheDir(), "sonos");
+        //noinspection ResultOfMethodCallIgnored
+        dir.mkdirs();
+        trimCache(appContext, dir);
+        // extension matters: the HTTP server derives its Content-Type from it
+        final File file = new File(dir, "sonos-local-"
+                + Math.abs(uri.toString().hashCode()) + extensionFor(mime));
+        final File done = new File(file.getPath() + ".done");
+        if (!done.exists() || file.length() == 0) {
+            try (InputStream in = appContext.getContentResolver().openInputStream(uri);
+                 OutputStream out = new FileOutputStream(file)) {
+                if (in == null) {
+                    throw new IOException("Cannot open " + uri);
+                }
+                final byte[] buffer = new byte[64 * 1024];
+                int read;
+                while ((read = in.read(buffer)) != -1) {
+                    out.write(buffer, 0, read);
+                }
+            }
+            //noinspection ResultOfMethodCallIgnored
+            done.createNewFile();
+        }
+        return new LocalItem(file, title, durationSeconds, mime);
+    }
+
+    static String displayName(final Context appContext, final Uri uri) {
+        try (Cursor cursor = appContext.getContentResolver().query(uri,
+                new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst() && !cursor.isNull(0)) {
+                return cursor.getString(0);
+            }
+        } catch (final RuntimeException ignored) {
+        }
+        final String segment = uri.getLastPathSegment();
+        return segment != null ? segment : "Audio";
+    }
+
+    private static String extensionFor(final String mime) {
+        switch (mime) {
+            case "audio/mpeg": return ".mp3";
+            case "audio/flac": case "audio/x-flac": return ".flac";
+            case "audio/wav": case "audio/x-wav": return ".wav";
+            case "audio/ogg": case "application/ogg": return ".ogg";
+            default: return ".m4a";
+        }
     }
 
     /**
@@ -243,11 +365,19 @@ public final class SonosPlayer {
     private static void serve(final Context appContext, final StreamInfo info, final File file,
                               final BiConsumer<String, String> onReady,
                               final Consumer<Throwable> onError) {
+        serve(appContext, info.getName(), info.getDuration(), "audio/mp4", file,
+                onReady, onError);
+    }
+
+    static void serve(final Context appContext, final String title,
+                      final long durationSeconds, final String mimeType,
+                      final File file, final BiConsumer<String, String> onReady,
+                      final Consumer<Throwable> onError) {
         //noinspection ResultOfMethodCallIgnored
         file.setLastModified(System.currentTimeMillis()); // LRU touch for trimCache
         try {
-            onReady.accept(SonosStreamService.start(appContext, file, info.getName(),
-                    info.getDuration()), "audio/mp4");
+            onReady.accept(SonosStreamService.start(appContext, file, title, durationSeconds),
+                    mimeType);
         } catch (final IOException e) {
             onError.accept(e);
         }
@@ -321,21 +451,35 @@ public final class SonosPlayer {
     /** Persists what the control screen shows on open: speaker + current track. */
     static void persistLast(final Context appContext, final SonosDevice device,
                             final StreamInfo info) {
+        persistLast(appContext, device, info.getName(), info.getDuration());
+    }
+
+    static void persistLast(final Context appContext, final SonosDevice device,
+                            final String title, final long durationSeconds) {
         PreferenceManager.getDefaultSharedPreferences(appContext).edit()
                 .putString(PREF_LAST_IP, device.getIp())
                 .putString(PREF_LAST_NAME, device.getRoomName())
-                .putString("sonos_last_title", info.getName())
-                .putLong("sonos_last_duration", info.getDuration())
+                .putString("sonos_last_title", title)
+                .putLong("sonos_last_duration", durationSeconds)
                 .apply();
     }
 
     private static void playUri(final Context appContext, final Activity activity,
                                 final SonosDevice device, final StreamInfo info,
                                 final String url, final String mimeType) {
-        persistLast(appContext, device, info);
+        playUri(appContext, activity, device, info.getName(), info.getThumbnailUrl(),
+                info.getDuration(), url, mimeType);
+    }
+
+    private static void playUri(final Context appContext, final Activity activity,
+                                final SonosDevice device, final String title,
+                                @Nullable final String thumbnailUrl,
+                                final long durationSeconds,
+                                final String url, final String mimeType) {
+        persistLast(appContext, device, title, durationSeconds);
         //noinspection ResultOfMethodCallIgnored
-        Completable.fromAction(() -> device.playUri(url, info.getName(),
-                        info.getThumbnailUrl(), info.getDuration(), mimeType))
+        Completable.fromAction(() -> device.playUri(url, title,
+                        thumbnailUrl, durationSeconds, mimeType))
                 .subscribeOn(Schedulers.io())
                 .observeOn(AndroidSchedulers.mainThread())
                 .subscribe(() -> {

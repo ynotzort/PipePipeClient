@@ -14,6 +14,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- reading raw file paths from m3u playlist entries (Play on Sonos) -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
     <permission
         android:name="${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
         tools:node="remove" />
@@ -127,6 +132,33 @@
             android:name=".util.sonos.SonosControlActivity"
             android:label="@string/play_on_sonos_title"
             android:launchMode="singleTask" />
+
+        <activity
+            android:name=".util.sonos.SonosLocalPlayActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="@string/sonos_play_playlist"
+            android:taskAffinity=""
+            android:theme="@style/RouterActivityThemeDark">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:mimeType="audio/*" />
+                <data android:scheme="file" android:mimeType="audio/*" />
+                <!-- m3u playlists often carry an application/* MIME type -->
+                <data android:scheme="content" android:mimeType="application/x-mpegurl" />
+                <data android:scheme="content" android:mimeType="application/vnd.apple.mpegurl" />
+                <data android:scheme="file" android:mimeType="application/x-mpegurl" />
+                <data android:scheme="file" android:mimeType="application/vnd.apple.mpegurl" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="application/x-mpegurl" />
+                <data android:mimeType="application/vnd.apple.mpegurl" />
+            </intent-filter>
+        </activity>
 
         <activity
             android:name=".settings.SettingsActivity"

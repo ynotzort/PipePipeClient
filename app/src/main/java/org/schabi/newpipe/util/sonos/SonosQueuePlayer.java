@@ -3,37 +3,42 @@ package org.schabi.newpipe.util.sonos;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
 import android.util.Log;
 import android.widget.Toast;
 
-import org.schabi.newpipe.R;
-import org.schabi.newpipe.extractor.stream.StreamInfo;
-import org.schabi.newpipe.player.playqueue.PlayQueueItem;
 import androidx.annotation.Nullable;
 
+import org.schabi.newpipe.R;
+import org.schabi.newpipe.player.playqueue.PlayQueueItem;
 import org.schabi.newpipe.util.ExtractorHelper;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
+import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.functions.Action;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 
 /**
- * Plays a whole play queue on a Sonos speaker, advancing track to track.
+ * Plays a queue of items on a Sonos speaker, advancing track to track.
  *
- * <p>Per item: fetch {@link StreamInfo} → {@link SonosPlayer#resolve} (direct URL
- * or download-to-cache + local serve). The first item plays via
- * {@code SetAVTransportURI}; the following one is prefetched and queued with
- * {@code SetNextAVTransportURI} so the speaker auto-advances near-gapless.
- * A 5 s poll of {@code GetPositionInfo} detects the advance (TrackURI switched to
- * the queued URL), retires the played file and queues the item after next.
- * Items that fail to resolve are skipped. One session at a time.</p>
+ * <p>Items are anything that can {@link Item#prepare} itself into a playable URL:
+ * PipePipe streams (extract → direct URL or download-to-cache + serve), local
+ * files (copy-to-cache + serve, e.g. from an m3u playlist) or plain http URLs.
+ * The first item plays via {@code SetAVTransportURI}; the following one is
+ * prefetched and queued with {@code SetNextAVTransportURI} so the speaker
+ * auto-advances near-gapless. A 5 s poll of {@code GetPositionInfo} detects the
+ * advance (TrackURI switched to the queued URL), retires the played file and
+ * queues the item after next. Items that fail to prepare are skipped.
+ * One session at a time.</p>
  */
 public final class SonosQueuePlayer {
     private static final String TAG = "SonosQueuePlayer";
@@ -43,11 +48,54 @@ public final class SonosQueuePlayer {
     private SonosQueuePlayer() {
     }
 
-    public static void play(final Activity activity, final List<PlayQueueItem> items) {
+    /** A queue entry that can resolve itself into something the speaker can fetch. */
+    public interface Item {
+        /** Display title for the queue list (available before preparing). */
+        String title();
+
+        /**
+         * Resolves to a playable URL (may download/copy first); calls exactly one
+         * of the callbacks on the main thread.
+         */
+        Disposable prepare(Context appContext, boolean quiet,
+                           Consumer<Prepared> onReady, Consumer<Throwable> onError);
+    }
+
+    /** A prepared item: everything needed for SetAVTransportURI + DIDL. */
+    public static final class Prepared {
+        final String url;
+        final String mimeType;
+        final String title;
+        final long durationSeconds;
+        @Nullable
+        final String thumbnailUrl;
+
+        Prepared(final String url, final String mimeType, final String title,
+                 final long durationSeconds, @Nullable final String thumbnailUrl) {
+            this.url = url;
+            this.mimeType = mimeType;
+            this.title = title;
+            this.durationSeconds = durationSeconds;
+            this.thumbnailUrl = thumbnailUrl;
+        }
+    }
+
+    /** Plays a PipePipe play queue (local/remote playlist fragments). */
+    public static void play(final Activity activity, final List<PlayQueueItem> queueItems) {
+        final List<Item> items = new ArrayList<>(queueItems.size());
+        for (final PlayQueueItem queueItem : queueItems) {
+            items.add(new StreamItem(queueItem));
+        }
+        playItems(activity, items, null);
+    }
+
+    /** Plays arbitrary items (e.g. parsed from an m3u playlist). */
+    public static void playItems(final Activity activity, final List<Item> items,
+                                 @Nullable final Runnable onSpeakerChosen) {
         if (items.isEmpty()) {
             return;
         }
-        SonosPlayer.chooseSpeaker(activity, false, null, device -> {
+        SonosPlayer.chooseSpeaker(activity, false, onSpeakerChosen, device -> {
             stop();
             session = new Session(activity.getApplicationContext(), device, items);
             session.start(activity);
@@ -57,6 +105,7 @@ public final class SonosQueuePlayer {
     /** Ends the active queue session, if any (speaker keeps playing the current track). */
     public static void stop() {
         if (session != null) {
+            session.generation++; // invalidate in-flight prepare callbacks
             session.disposables.clear();
             session = null;
         }
@@ -69,8 +118,8 @@ public final class SonosQueuePlayer {
             return null;
         }
         final List<String> titles = new ArrayList<>(session.items.size());
-        for (final PlayQueueItem item : session.items) {
-            titles.add(item.getTitle());
+        for (final Item item : session.items) {
+            titles.add(item.title());
         }
         return titles;
     }
@@ -99,39 +148,140 @@ public final class SonosQueuePlayer {
         }
     }
 
+    /** A PipePipe stream: extract StreamInfo, then direct URL or download+serve. */
+    private static final class StreamItem implements Item {
+        private final PlayQueueItem queueItem;
+
+        StreamItem(final PlayQueueItem queueItem) {
+            this.queueItem = queueItem;
+        }
+
+        @Override
+        public String title() {
+            return queueItem.getTitle();
+        }
+
+        @Override
+        public Disposable prepare(final Context appContext, final boolean quiet,
+                                  final Consumer<Prepared> onReady,
+                                  final Consumer<Throwable> onError) {
+            return ExtractorHelper
+                    .getStreamInfo(queueItem.getServiceId(), queueItem.getUrl(), false)
+                    .subscribeOn(Schedulers.io())
+                    .observeOn(AndroidSchedulers.mainThread())
+                    .subscribe(info -> SonosPlayer.resolve(appContext, info, quiet,
+                                    (url, mimeType) -> onReady.accept(new Prepared(url,
+                                            mimeType, info.getName(), info.getDuration(),
+                                            info.getThumbnailUrl())),
+                                    onError::accept),
+                            onError::accept);
+        }
+    }
+
+    /** A local audio file (content:// or file://): copy into cache, then serve. */
+    static final class LocalFileItem implements Item {
+        private final Uri uri;
+        private final String displayTitle;
+
+        LocalFileItem(final Uri uri, final String displayTitle) {
+            this.uri = uri;
+            this.displayTitle = displayTitle;
+        }
+
+        @Override
+        public String title() {
+            return displayTitle;
+        }
+
+        @Override
+        public Disposable prepare(final Context appContext, final boolean quiet,
+                                  final Consumer<Prepared> onReady,
+                                  final Consumer<Throwable> onError) {
+            return Single.fromCallable(() -> SonosPlayer.importLocalFile(appContext, uri))
+                    .subscribeOn(Schedulers.io())
+                    .observeOn(AndroidSchedulers.mainThread())
+                    .subscribe(local -> SonosPlayer.serve(appContext, local.title,
+                                    local.durationSeconds, local.mimeType, local.file,
+                                    (url, mimeType) -> onReady.accept(new Prepared(url,
+                                            mimeType, local.title, local.durationSeconds,
+                                            null)),
+                                    onError::accept),
+                            onError::accept);
+        }
+    }
+
+    /** A plain http(s) URL (e.g. a web radio entry in an m3u): pass straight through. */
+    static final class HttpItem implements Item {
+        private final String url;
+        private final String displayTitle;
+
+        HttpItem(final String url, final String displayTitle) {
+            this.url = url;
+            this.displayTitle = displayTitle;
+        }
+
+        @Override
+        public String title() {
+            return displayTitle;
+        }
+
+        @Override
+        public Disposable prepare(final Context appContext, final boolean quiet,
+                                  final Consumer<Prepared> onReady,
+                                  final Consumer<Throwable> onError) {
+            onReady.accept(new Prepared(url, mimeFor(url), displayTitle, 0, null));
+            return Disposable.disposed();
+        }
+
+        private static String mimeFor(final String url) {
+            final String lower = url.toLowerCase(java.util.Locale.US);
+            if (lower.contains(".m4a") || lower.contains(".mp4") || lower.contains(".aac")) {
+                return "audio/mp4";
+            }
+            if (lower.contains(".flac")) {
+                return "audio/flac";
+            }
+            if (lower.contains(".ogg")) {
+                return "audio/ogg";
+            }
+            return "audio/mpeg";
+        }
+    }
+
     private interface OnPrepared {
-        void ready(int index, StreamInfo info, String url, String mimeType);
+        void ready(int index, Prepared prepared);
     }
 
     private static final class Session {
         private final Context appContext;
         private final SonosDevice device;
-        private final List<PlayQueueItem> items;
+        private final List<Item> items;
         private final CompositeDisposable disposables = new CompositeDisposable();
 
         private int currentIndex;
         private String currentUrl;
         private String nextUrl;
-        private StreamInfo nextInfo;
+        private Prepared nextPrepared;
         private int nextIndex;
         private int stoppedPolls;
         /** Bumped on skip; stale prepare callbacks (e.g. a superseded download) bail out. */
         private int generation;
 
-        Session(final Context appContext, final SonosDevice device,
-                final List<PlayQueueItem> items) {
+        Session(final Context appContext, final SonosDevice device, final List<Item> items) {
             this.appContext = appContext;
             this.device = device;
             this.items = items;
         }
 
         void start(final Activity activity) {
-            prepare(0, false, (index, info, url, mimeType) -> {
+            prepare(0, false, (index, prepared) -> {
                 currentIndex = index;
-                currentUrl = url;
-                SonosPlayer.persistLast(appContext, device, info);
-                soap(() -> device.playUri(url, info.getName(), info.getThumbnailUrl(),
-                        info.getDuration(), mimeType), () -> {
+                currentUrl = prepared.url;
+                SonosPlayer.persistLast(appContext, device, prepared.title,
+                        prepared.durationSeconds);
+                soap(() -> device.playUri(prepared.url, prepared.title,
+                        prepared.thumbnailUrl, prepared.durationSeconds,
+                        prepared.mimeType), () -> {
                     Toast.makeText(appContext,
                             appContext.getString(R.string.sonos_playing_toast,
                                     device.getRoomName()),
@@ -148,7 +298,7 @@ public final class SonosQueuePlayer {
         }
 
         /**
-         * Resolves item {@code index} to a playable URL; skips unplayable items;
+         * Prepares item {@code index}; skips unpreparable items;
          * {@code onExhausted} fires when the end of the queue is reached.
          */
         private void prepare(final int index, final boolean quiet, final OnPrepared onReady,
@@ -158,33 +308,24 @@ public final class SonosQueuePlayer {
                 onExhausted.run();
                 return;
             }
-            final PlayQueueItem item = items.get(index);
+            final Item item = items.get(index);
             final Runnable skip = () -> {
                 if (gen != generation) {
                     return;
                 }
-                Log.w(TAG, "skipping unplayable queue item: " + item.getUrl());
+                Log.w(TAG, "skipping unplayable queue item: " + item.title());
                 prepare(index + 1, quiet, onReady, onExhausted);
             };
-            disposables.add(ExtractorHelper
-                    .getStreamInfo(item.getServiceId(), item.getUrl(), false)
-                    .subscribeOn(Schedulers.io())
-                    .observeOn(AndroidSchedulers.mainThread())
-                    .subscribe(info -> {
-                        if (gen != generation) {
-                            return;
+            disposables.add(item.prepare(appContext, quiet,
+                    prepared -> {
+                        if (gen == generation) {
+                            onReady.ready(index, prepared);
                         }
-                        SonosPlayer.resolve(appContext, info, quiet,
-                                (url, mimeType) -> {
-                                    if (gen == generation) {
-                                        onReady.ready(index, info, url, mimeType);
-                                    }
-                                },
-                                throwable -> skip.run());
-                    }, throwable -> skip.run()));
+                    },
+                    throwable -> skip.run()));
         }
 
-        /** Jumps to item {@code index}: resolve it, play it, re-queue the following one. */
+        /** Jumps to item {@code index}: prepare it, play it, re-queue the following one. */
         void skipTo(final int index) {
             if (index < 0 || index >= items.size()) {
                 return;
@@ -193,13 +334,15 @@ public final class SonosQueuePlayer {
             nextUrl = null;
             stoppedPolls = 0;
             final String oldUrl = currentUrl;
-            prepare(index, false, (i, info, url, mimeType) -> {
+            prepare(index, false, (i, prepared) -> {
                 currentIndex = i;
-                currentUrl = url;
-                SonosPlayer.persistLast(appContext, device, info);
-                soap(() -> device.playUri(url, info.getName(), info.getThumbnailUrl(),
-                        info.getDuration(), mimeType), () -> {
-                    if (oldUrl != null && !oldUrl.equals(url)) {
+                currentUrl = prepared.url;
+                SonosPlayer.persistLast(appContext, device, prepared.title,
+                        prepared.durationSeconds);
+                soap(() -> device.playUri(prepared.url, prepared.title,
+                        prepared.thumbnailUrl, prepared.durationSeconds,
+                        prepared.mimeType), () -> {
+                    if (oldUrl != null && !oldUrl.equals(prepared.url)) {
                         SonosStreamService.drop(oldUrl);
                     }
                     // ponytail: the speaker may briefly keep the previously queued next
@@ -212,13 +355,14 @@ public final class SonosQueuePlayer {
         }
 
         private void queueNext(final int fromIndex) {
-            prepare(fromIndex, true, (index, info, url, mimeType) -> soap(
-                    () -> device.setNextUri(url, info.getName(), info.getThumbnailUrl(),
-                            info.getDuration(), mimeType),
+            prepare(fromIndex, true, (index, prepared) -> soap(
+                    () -> device.setNextUri(prepared.url, prepared.title,
+                            prepared.thumbnailUrl, prepared.durationSeconds,
+                            prepared.mimeType),
                     () -> {
                         nextIndex = index;
-                        nextInfo = info;
-                        nextUrl = url;
+                        nextPrepared = prepared;
+                        nextUrl = prepared.url;
                     }), () -> nextUrl = null);
         }
 
@@ -248,7 +392,8 @@ public final class SonosQueuePlayer {
                 currentIndex = nextIndex;
                 currentUrl = nextUrl;
                 nextUrl = null;
-                SonosPlayer.persistLast(appContext, device, nextInfo);
+                SonosPlayer.persistLast(appContext, device, nextPrepared.title,
+                        nextPrepared.durationSeconds);
                 queueNext(nextIndex + 1);
                 stoppedPolls = 0;
                 return;
@@ -265,6 +410,7 @@ public final class SonosQueuePlayer {
         }
 
         private void teardown() {
+            generation++;
             disposables.clear();
             SonosStreamService.shutdown(appContext);
             if (session == this) {

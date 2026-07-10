@@ -75,8 +75,11 @@ public final class SonosStreamService extends Service {
     public static String start(final Context context, final File file, final String title,
                                final long durationSeconds) throws IOException {
         final String ip = getLocalIpAddress();
+        final String name = file.getName();
+        final String extension = name.contains(".")
+                ? name.substring(name.lastIndexOf('.')) : ".m4a";
         final String path = "/audio-" + System.currentTimeMillis()
-                + "-" + SEQUENCE.incrementAndGet() + ".m4a";
+                + "-" + SEQUENCE.incrementAndGet() + extension;
         FILES.put(path, file);
         final Intent intent = new Intent(context, SonosStreamService.class)
                 .putExtra(EXTRA_TITLE, title)
@@ -189,6 +192,23 @@ public final class SonosStreamService extends Service {
         thread.start();
     }
 
+    /** Cache files keep their source extension (local-file imports vary in format). */
+    private static String contentTypeFor(final String name) {
+        if (name.endsWith(".mp3")) {
+            return "audio/mpeg";
+        }
+        if (name.endsWith(".flac")) {
+            return "audio/flac";
+        }
+        if (name.endsWith(".wav")) {
+            return "audio/wav";
+        }
+        if (name.endsWith(".ogg")) {
+            return "audio/ogg";
+        }
+        return "audio/mp4";
+    }
+
     private void handleClient(final Socket client) {
         try (Socket socket = client) {
             final BufferedReader reader = new BufferedReader(
@@ -226,7 +246,8 @@ public final class SonosStreamService extends Service {
             final long contentLength = rangeEnd - rangeStart + 1;
             final StringBuilder header = new StringBuilder()
                     .append(partial ? "HTTP/1.1 206 Partial Content\r\n" : "HTTP/1.1 200 OK\r\n")
-                    .append("Content-Type: audio/mp4\r\n")
+                    .append("Content-Type: ").append(contentTypeFor(file.getName()))
+                    .append("\r\n")
                     .append("Accept-Ranges: bytes\r\n")
                     .append("Content-Length: ").append(contentLength).append("\r\n");
             if (partial) {
