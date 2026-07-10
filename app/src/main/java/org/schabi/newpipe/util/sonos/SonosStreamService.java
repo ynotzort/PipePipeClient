@@ -16,6 +16,7 @@ import android.util.Log;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
+import androidx.preference.PreferenceManager;
 
 import com.arthenica.ffmpegkit.FFmpegKit;
 import com.arthenica.ffmpegkit.FFmpegKitConfig;
@@ -55,7 +56,6 @@ public final class SonosStreamService extends Service {
     private static final String TAG = "SonosStreamService";
     public static final int PORT = 8987;
     private static final String ACTION_STOP = "org.schabi.newpipe.sonos.STOP";
-    private static final String EXTRA_TITLE = "title";
     private static final String EXTRA_DURATION = "duration";
     private static final String EXTRA_LIVE = "live";
     private static final long LIVE_IDLE_STOP_MS = 1800 * 1000L;
@@ -71,6 +71,9 @@ public final class SonosStreamService extends Service {
     /** Path → HLS variant URL for endless live relays (ffmpeg remux, no file). */
     private static final Map<String, String> LIVE = new ConcurrentHashMap<>();
     private static final AtomicLong SEQUENCE = new AtomicLong();
+
+    /** Running service instance, for notification refreshes on track change. */
+    private static volatile SonosStreamService instance;
 
     private ServerSocket serverSocket;
     private WifiManager.WifiLock wifiLock;
@@ -97,7 +100,6 @@ public final class SonosStreamService extends Service {
                 + "-" + SEQUENCE.incrementAndGet() + extension;
         FILES.put(path, file);
         final Intent intent = new Intent(context, SonosStreamService.class)
-                .putExtra(EXTRA_TITLE, title)
                 .putExtra(EXTRA_DURATION, durationSeconds);
         context.startService(intent);
         return "http://" + ip + ":" + PORT + path;
@@ -116,7 +118,6 @@ public final class SonosStreamService extends Service {
                 + "-" + SEQUENCE.incrementAndGet() + ".aac";
         LIVE.put(path, hlsVariantUrl);
         context.startService(new Intent(context, SonosStreamService.class)
-                .putExtra(EXTRA_TITLE, title)
                 .putExtra(EXTRA_LIVE, true));
         return "http://" + ip + ":" + PORT + path;
     }
@@ -141,6 +142,15 @@ public final class SonosStreamService extends Service {
         context.stopService(new Intent(context, SonosStreamService.class));
     }
 
+    /** Re-renders the notification from the persisted current track (no-op if not running). */
+    public static void refreshNotification() {
+        final SonosStreamService service = instance;
+        if (service != null) {
+            service.getSystemService(NotificationManager.class)
+                    .notify(NOTIFICATION_ID, service.buildNotification());
+        }
+    }
+
     private static String getLocalIpAddress() throws IOException {
         final Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
         while (interfaces.hasMoreElements()) {
@@ -161,10 +171,10 @@ public final class SonosStreamService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        final String title = intent.getStringExtra(EXTRA_TITLE);
         final long duration = intent.getLongExtra(EXTRA_DURATION, 0);
 
-        startForeground(NOTIFICATION_ID, buildNotification(title));
+        instance = this;
+        startForeground(NOTIFICATION_ID, buildNotification());
         acquireWifiLock();
         startServer();
 
@@ -179,7 +189,15 @@ public final class SonosStreamService extends Service {
         return START_NOT_STICKY;
     }
 
-    private Notification buildNotification(final String title) {
+    /**
+     * The notification always shows the persisted current track, not whatever
+     * was served last: in queue mode the prefetched NEXT item is served while
+     * the current one still plays, so a served-title notification is wrong.
+     */
+    private Notification buildNotification() {
+        final String title = PreferenceManager
+                .getDefaultSharedPreferences(this)
+                .getString(SonosPlayer.PREF_LAST_TITLE, "");
         final String channelId = getString(R.string.notification_channel_id);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getSystemService(NotificationManager.class).createNotificationChannel(
@@ -392,6 +410,7 @@ public final class SonosStreamService extends Service {
 
     @Override
     public void onDestroy() {
+        instance = null;
         autoStopHandler.removeCallbacksAndMessages(null);
         // ffmpeg exit → pipe EOF → relay thread closes its socket and cleans up
         for (final long sessionId : liveSessions) {

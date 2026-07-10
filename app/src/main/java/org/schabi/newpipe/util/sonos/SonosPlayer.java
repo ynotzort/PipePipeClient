@@ -543,6 +543,7 @@ public final class SonosPlayer {
                 .putLong(PREF_LAST_DURATION, durationSeconds)
                 .putBoolean(PREF_LAST_LIVE, live)
                 .apply();
+        SonosStreamService.refreshNotification();
     }
 
     private static void playUri(final Context appContext, final Activity activity,
