@@ -3,9 +3,7 @@ package org.schabi.newpipe.fragments.detail;
 import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.content.BroadcastReceiver;
-import android.content.ComponentName;
 import android.content.Context;
-import android.content.ServiceConnection;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
@@ -19,7 +17,6 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
-import android.os.IBinder;
 import android.os.Looper;
 import android.provider.Settings;
 import android.util.DisplayMetrics;
@@ -31,12 +28,9 @@ import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 import android.view.WindowManager;
 import android.view.animation.DecelerateInterpolator;
-import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.RelativeLayout;
 import android.widget.LinearLayout;
-import android.widget.SeekBar;
-import android.widget.TextView;
 
 import android.widget.Toast;
 import androidx.annotation.AttrRes;
@@ -59,7 +53,6 @@ import com.google.android.material.bottomsheet.BottomSheetBehavior;
 import com.google.android.material.tabs.TabLayout;
 import com.squareup.picasso.Callback;
 
-import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
 import org.schabi.newpipe.App;
 import org.schabi.newpipe.R;
@@ -105,21 +98,11 @@ import org.schabi.newpipe.player.playqueue.PlayQueueItem;
 import org.schabi.newpipe.player.playqueue.SinglePlayQueue;
 import org.schabi.newpipe.sleep.SleepTimerService;
 import org.schabi.newpipe.util.*;
-import org.schabi.newpipe.extractor.MediaFormat;
-import org.schabi.newpipe.streams.io.StoredFileHelper;
 import org.schabi.newpipe.util.external_communication.KoreUtils;
-import org.schabi.newpipe.util.sonos.SonosDevice;
-import org.schabi.newpipe.util.sonos.SonosDiscovery;
-import org.schabi.newpipe.util.sonos.SonosStreamService;
+import org.schabi.newpipe.util.sonos.SonosPlayer;
 
-import us.shandian.giga.get.DownloadMission;
-import us.shandian.giga.get.HlsDownloadStreamHelper;
-import us.shandian.giga.get.MissionRecoveryInfo;
-import us.shandian.giga.service.DownloadManagerService;
 import org.schabi.newpipe.util.external_communication.ShareUtils;
 
-import java.io.File;
-import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -662,265 +645,11 @@ public final class VideoDetailFragment
     //////////////////////////////////////////////////////////////////////////*/
 
     private void playOnSonos(final boolean useLastSpeaker) {
-        if (currentInfo == null) {
-            return;
-        }
-        final StreamInfo info = currentInfo;
-        // Direct progressive URL (non-YouTube services, DASH clients): hand it to Sonos as-is.
-        final AudioStream direct = pickSonosAudioStream(info, true);
-        if (direct != null) {
-            final String mimeType =
-                    direct.getFormat() == MediaFormat.MP3 ? "audio/mpeg" : "audio/mp4";
-            resolveSpeakerAndPlay(info, direct.getContent(), mimeType, useLastSpeaker);
-            return;
-        }
-        // SABR (YouTube default): no URL exists — download the audio to cache with the
-        // app's SABR pipeline, then serve the file to the speaker from an in-app server.
-        final AudioStream sabr = pickSonosAudioStream(info, false);
-        if (sabr == null) {
-            Toast.makeText(activity, R.string.sonos_no_compatible_stream, Toast.LENGTH_LONG)
-                    .show();
-            return;
-        }
-        final File file = sonosCacheFile(info);
-        if (new File(file.getPath() + ".done").exists() && file.length() > 0) {
-            serveAndPlayOnSonos(info, file, useLastSpeaker);
-            return;
-        }
-        downloadForSonos(info, sabr, file, useLastSpeaker);
-    }
-
-    private static AudioStream pickSonosAudioStream(final StreamInfo info,
-                                                    final boolean directUrlOnly) {
-        return info.getAudioStreams().stream()
-                .filter(s -> directUrlOnly
-                        ? s.isUrl() && s.getDeliveryMethod() == DeliveryMethod.PROGRESSIVE_HTTP
-                        : s.getDeliveryMethod() == DeliveryMethod.SABR)
-                .filter(s -> s.getFormat() == MediaFormat.M4A || s.getFormat() == MediaFormat.MP3)
-                .max(Comparator.comparing((AudioStream s) -> s.getFormat() == MediaFormat.M4A)
-                        .thenComparingInt(AudioStream::getAverageBitrate))
-                .orElse(null);
-    }
-
-    private File sonosCacheFile(final StreamInfo info) {
-        final File dir = new File(requireContext().getCacheDir(), "sonos");
-        //noinspection ResultOfMethodCallIgnored
-        dir.mkdirs();
-        return new File(dir, "sonos-" + Math.abs(info.getUrl().hashCode()) + ".m4a");
-    }
-
-    private void downloadForSonos(final StreamInfo info, final AudioStream sabrStream,
-                                  final File file, final boolean useLastSpeaker) {
-        try {
-            final File dir = file.getParentFile();
-            final File[] stale = dir == null ? null : dir.listFiles();
-            if (stale != null) {
-                for (final File f : stale) {
-                    //noinspection ResultOfMethodCallIgnored
-                    f.delete();
-                }
-            }
-            //noinspection ResultOfMethodCallIgnored
-            file.createNewFile();
-            final StoredFileHelper storage = new StoredFileHelper(requireContext(),
-                    Uri.fromFile(file.getParentFile()), Uri.fromFile(file), "sonos");
-            awaitSonosDownload(info, file, useLastSpeaker);
-            DownloadManagerService.startMission(requireContext(),
-                    new String[]{sabrStream.getContent()}, storage, 'a', 1, info.getUrl(),
-                    null, null, 0,
-                    new MissionRecoveryInfo[]{new MissionRecoveryInfo(sabrStream)},
-                    HlsDownloadStreamHelper.buildResourceDeliveryMethods(sabrStream, null),
-                    HlsDownloadStreamHelper.buildResourceManifestUrls(sabrStream, null),
-                    HlsDownloadStreamHelper.buildResourceIsUrls(sabrStream, null));
-            Toast.makeText(activity, R.string.sonos_downloading, Toast.LENGTH_LONG).show();
-        } catch (final IOException e) {
-            showSonosError(e);
+        if (currentInfo != null) {
+            SonosPlayer.play(activity, currentInfo, useLastSpeaker, null);
         }
     }
 
-    private void awaitSonosDownload(final StreamInfo info, final File file,
-                                    final boolean useLastSpeaker) {
-        final Context appContext = requireContext().getApplicationContext();
-        final Uri expectedUri = Uri.fromFile(file);
-        final ServiceConnection connection = new ServiceConnection() {
-            private DownloadManagerService.DownloadManagerBinder binder;
-            private final Handler.Callback callback = msg -> {
-                if (!(msg.obj instanceof DownloadMission)) {
-                    return false;
-                }
-                final DownloadMission mission = (DownloadMission) msg.obj;
-                if (!expectedUri.equals(mission.storage.getUri())) {
-                    return false;
-                }
-                if (msg.what == DownloadManagerService.MESSAGE_FINISHED) {
-                    try {
-                        //noinspection ResultOfMethodCallIgnored
-                        new File(file.getPath() + ".done").createNewFile();
-                    } catch (final IOException ignored) {
-                    }
-                    detach();
-                    serveAndPlayOnSonos(info, file, useLastSpeaker);
-                } else if (msg.what == DownloadManagerService.MESSAGE_ERROR) {
-                    detach();
-                    showSonosError(new IOException("audio download failed, code "
-                            + mission.errCode));
-                }
-                return false;
-            };
-
-            private void detach() {
-                if (binder != null) {
-                    binder.removeMissionEventListener(callback);
-                }
-                appContext.unbindService(this);
-            }
-
-            @Override
-            public void onServiceConnected(final ComponentName name, final IBinder service) {
-                binder = (DownloadManagerService.DownloadManagerBinder) service;
-                binder.addMissionEventListener(callback);
-            }
-
-            @Override
-            public void onServiceDisconnected(final ComponentName name) {
-            }
-        };
-        appContext.bindService(new Intent(appContext, DownloadManagerService.class),
-                connection, Context.BIND_AUTO_CREATE);
-    }
-
-    private void serveAndPlayOnSonos(final StreamInfo info, final File file,
-                                     final boolean useLastSpeaker) {
-        final String serveUrl;
-        try {
-            serveUrl = SonosStreamService.start(requireContext(), file, info.getName(),
-                    info.getDuration());
-        } catch (final IOException e) {
-            showSonosError(e);
-            return;
-        }
-        resolveSpeakerAndPlay(info, serveUrl, "audio/mp4", useLastSpeaker);
-    }
-
-    private void resolveSpeakerAndPlay(final StreamInfo info, final String url,
-                                       final String mimeType, final boolean useLastSpeaker) {
-        final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(activity);
-        final String lastIp = prefs.getString("sonos_last_ip", null);
-        if (useLastSpeaker && lastIp != null) {
-            startSonosPlayback(new SonosDevice(lastIp, prefs.getString("sonos_last_name", lastIp)),
-                    info, url, mimeType);
-            return;
-        }
-        Toast.makeText(activity, R.string.sonos_searching, Toast.LENGTH_SHORT).show();
-        disposables.add(Single.fromCallable(() -> SonosDiscovery.discover(requireContext()))
-                .subscribeOn(Schedulers.io())
-                .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(devices -> {
-                    if (devices.isEmpty()) {
-                        Toast.makeText(activity, R.string.sonos_no_speakers_found,
-                                Toast.LENGTH_LONG).show();
-                    } else if (devices.size() == 1) {
-                        startSonosPlayback(devices.get(0), info, url, mimeType);
-                    } else {
-                        new AlertDialog.Builder(activity)
-                                .setTitle(R.string.sonos_select_speaker)
-                                .setItems(devices.stream().map(SonosDevice::getRoomName)
-                                                .toArray(CharSequence[]::new),
-                                        (dialog, which) ->
-                                                startSonosPlayback(devices.get(which), info,
-                                                        url, mimeType))
-                                .show();
-                    }
-                }, this::showSonosError));
-    }
-
-    private void startSonosPlayback(final SonosDevice device, final StreamInfo info,
-                                    final String url, final String mimeType) {
-        PreferenceManager.getDefaultSharedPreferences(activity).edit()
-                .putString("sonos_last_ip", device.getIp())
-                .putString("sonos_last_name", device.getRoomName())
-                .apply();
-        disposables.add(Completable.fromAction(() -> device.playUri(url,
-                        info.getName(), info.getThumbnailUrl(), info.getDuration(), mimeType))
-                .subscribeOn(Schedulers.io())
-                .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(() -> {
-                    Toast.makeText(activity,
-                            getString(R.string.sonos_playing_toast, device.getRoomName()),
-                            Toast.LENGTH_SHORT).show();
-                    showSonosControls(device);
-                }, this::showSonosError));
-    }
-
-    private void showSonosControls(final SonosDevice device) {
-        final int pad = (int) (20 * getResources().getDisplayMetrics().density);
-        final LinearLayout layout = new LinearLayout(activity);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(pad, pad / 2, pad, 0);
-
-        final LinearLayout buttons = new LinearLayout(activity);
-        buttons.setOrientation(LinearLayout.HORIZONTAL);
-        final LinearLayout.LayoutParams buttonParams =
-                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-        final Button resumeButton = new Button(activity);
-        resumeButton.setText(R.string.sonos_resume);
-        resumeButton.setOnClickListener(v -> runSonosAction(device::play));
-        final Button pauseButton = new Button(activity);
-        pauseButton.setText(R.string.pause);
-        pauseButton.setOnClickListener(v -> runSonosAction(device::pause));
-        final Button stopButton = new Button(activity);
-        stopButton.setText(R.string.stop);
-        stopButton.setOnClickListener(v -> runSonosAction(device::stop));
-        buttons.addView(resumeButton, buttonParams);
-        buttons.addView(pauseButton, buttonParams);
-        buttons.addView(stopButton, buttonParams);
-        layout.addView(buttons);
-
-        final TextView volumeLabel = new TextView(activity);
-        volumeLabel.setText(R.string.sonos_volume);
-        layout.addView(volumeLabel);
-        final SeekBar volumeBar = new SeekBar(activity);
-        volumeBar.setMax(100);
-        layout.addView(volumeBar);
-        disposables.add(Single.fromCallable(device::getVolume)
-                .subscribeOn(Schedulers.io())
-                .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(volumeBar::setProgress, throwable -> { }));
-        volumeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(final SeekBar seekBar, final int progress,
-                                          final boolean fromUser) {
-            }
-
-            @Override
-            public void onStartTrackingTouch(final SeekBar seekBar) {
-            }
-
-            @Override
-            public void onStopTrackingTouch(final SeekBar seekBar) {
-                runSonosAction(() -> device.setVolume(seekBar.getProgress()));
-            }
-        });
-
-        new AlertDialog.Builder(activity)
-                .setTitle(device.getRoomName())
-                .setView(layout)
-                .setPositiveButton(android.R.string.ok, null)
-                .show();
-    }
-
-    private void runSonosAction(final io.reactivex.rxjava3.functions.Action action) {
-        disposables.add(Completable.fromAction(action)
-                .subscribeOn(Schedulers.io())
-                .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(() -> { }, this::showSonosError));
-    }
-
-    private void showSonosError(final Throwable throwable) {
-        Toast.makeText(activity,
-                getString(R.string.sonos_error, String.valueOf(throwable.getMessage())),
-                Toast.LENGTH_LONG).show();
-    }
 
     @Override
     public boolean onLongClick(final View v) {

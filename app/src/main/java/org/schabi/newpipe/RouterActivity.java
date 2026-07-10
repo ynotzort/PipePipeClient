@@ -66,6 +66,7 @@ import org.schabi.newpipe.util.NavigationHelper;
 import org.schabi.newpipe.util.PermissionHelper;
 import org.schabi.newpipe.util.StreamTypeUtil;
 import org.schabi.newpipe.util.ThemeHelper;
+import org.schabi.newpipe.util.sonos.SonosPlayer;
 import org.schabi.newpipe.util.external_communication.ShareUtils;
 import org.schabi.newpipe.util.urlfinder.UrlFinder;
 import org.schabi.newpipe.views.FocusOverlayView;
@@ -97,6 +98,7 @@ public class RouterActivity extends AppCompatActivity {
     private StreamingService currentService;
     private boolean selectionIsDownload = false;
     private boolean selectionIsAddToPlaylist = false;
+    private boolean selectionIsSonos = false;
     private AlertDialog alertDialogChoice = null;
 
     @Override
@@ -359,7 +361,7 @@ public class RouterActivity extends AppCompatActivity {
                 .setNegativeButton(R.string.just_once, dialogButtonsClickListener)
                 .setPositiveButton(R.string.always, dialogButtonsClickListener)
                 .setOnDismissListener((dialog) -> {
-                    if (!selectionIsDownload && !selectionIsAddToPlaylist) {
+                    if (!selectionIsDownload && !selectionIsAddToPlaylist && !selectionIsSonos) {
                         finish();
                     }
                 })
@@ -501,6 +503,12 @@ public class RouterActivity extends AppCompatActivity {
             // not be added to a playlist
             returnList.add(addToPlaylist);
 
+            if (capabilities.contains(AUDIO)) {
+                returnList.add(new AdapterChoiceItem(getString(R.string.play_on_sonos_key),
+                        getString(R.string.play_on_sonos_title),
+                        R.drawable.ic_speaker));
+            }
+
         } else {
             returnList.add(showInfo);
             if (capabilities.contains(VIDEO) && !isExtVideoEnabled) {
@@ -572,6 +580,12 @@ public class RouterActivity extends AppCompatActivity {
             return;
         }
 
+        if (selectedChoiceKey.equals(getString(R.string.play_on_sonos_key))) {
+            selectionIsSonos = true;
+            openPlayOnSonos();
+            return;
+        }
+
         // stop and bypass FetcherService if InfoScreen was selected since
         // StreamDetailFragment can fetch data itself
         if (selectedChoiceKey.equals(getString(R.string.show_info_key))) {
@@ -630,6 +644,15 @@ public class RouterActivity extends AppCompatActivity {
                         )
                 )
         );
+    }
+
+    private void openPlayOnSonos() {
+        disposables.add(ExtractorHelper.getStreamInfo(currentServiceId, currentUrl, true)
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe(result ->
+                                SonosPlayer.play(this, result, false, this::finish),
+                        throwable -> showUnsupportedUrlDialog(currentUrl)));
     }
 
     @SuppressLint("CheckResult")

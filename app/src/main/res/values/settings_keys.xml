@@ -443,6 +443,7 @@
     <string name="download_key">download</string>
     <string name="add_to_playlist_key">add_to_playlist</string>
     <string name="always_ask_open_action_key">always_ask_player</string>
+    <string name="play_on_sonos_key">play_on_sonos</string>
 
     <string-array name="preferred_open_action_description_list">
         <item>@string/show_info</item>
@@ -451,6 +452,7 @@
         <item>@string/popup_player</item>
         <item>@string/download</item>
         <item>@string/add_to_playlist</item>
+        <item>@string/play_on_sonos_title</item>
         <item>@string/always_ask_open_action</item>
     </string-array>
     <string-array name="preferred_open_action_values_list">
@@ -460,6 +462,7 @@
         <item>@string/popup_player_key</item>
         <item>@string/download_key</item>
         <item>@string/add_to_playlist_key</item>
+        <item>@string/play_on_sonos_key</item>
         <item>@string/always_ask_open_action_key</item>
     </string-array>
 
