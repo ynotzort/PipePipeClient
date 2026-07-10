@@ -2,6 +2,8 @@ package org.schabi.newpipe.util.sonos;
 
 import android.content.SharedPreferences;
 import android.os.Bundle;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
@@ -11,6 +13,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.preference.PreferenceManager;
 
@@ -35,6 +38,10 @@ import io.reactivex.rxjava3.schedulers.Schedulers;
  * seeking, volume and cache cleanup. State is polled every 2 s while visible.
  */
 public final class SonosControlActivity extends AppCompatActivity {
+    private static final int MENU_CLEAR_CACHE = Menu.FIRST;
+    private static final int MENU_CACHE_LIMIT = Menu.FIRST + 1;
+    private static final long[] CACHE_MB_CHOICES = {256, 512, 1024, 2048, 4096};
+
     private final CompositeDisposable disposables = new CompositeDisposable();
     private SharedPreferences prefs;
     private SonosDevice device;
@@ -46,7 +53,6 @@ public final class SonosControlActivity extends AppCompatActivity {
     private ListView queueList;
     private Button prevButton;
     private Button nextButton;
-    private Button clearCacheButton;
     private boolean draggingPosition;
     private boolean draggingVolume;
     private long knownDuration;
@@ -58,6 +64,7 @@ public final class SonosControlActivity extends AppCompatActivity {
         Localization.assureCorrectAppLanguage(this);
         ThemeHelper.setTheme(this);
         setContentView(R.layout.activity_sonos_control);
+        setSupportActionBar(findViewById(R.id.sonos_toolbar));
         setTitle(R.string.play_on_sonos_title);
 
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
@@ -80,7 +87,6 @@ public final class SonosControlActivity extends AppCompatActivity {
         positionBar = findViewById(R.id.sonos_position_bar);
         volumeBar = findViewById(R.id.sonos_volume_bar);
         queueList = findViewById(R.id.sonos_queue_list);
-        clearCacheButton = findViewById(R.id.sonos_btn_clear_cache);
 
         findViewById(R.id.sonos_btn_play).setOnClickListener(v -> run(device::play));
         findViewById(R.id.sonos_btn_pause).setOnClickListener(v -> run(device::pause));
@@ -130,7 +136,32 @@ public final class SonosControlActivity extends AppCompatActivity {
             }
         });
 
-        clearCacheButton.setOnClickListener(v -> {
+    }
+
+    @Override
+    public boolean onCreateOptionsMenu(final Menu menu) {
+        menu.add(Menu.NONE, MENU_CLEAR_CACHE, 0, "");
+        menu.add(Menu.NONE, MENU_CACHE_LIMIT, 1, R.string.sonos_cache_limit);
+        return true;
+    }
+
+    @Override
+    public boolean onPrepareOptionsMenu(final Menu menu) {
+        long bytes = 0;
+        final File[] files = cacheDir().listFiles();
+        if (files != null) {
+            for (final File f : files) {
+                bytes += f.length();
+            }
+        }
+        menu.findItem(MENU_CLEAR_CACHE).setTitle(getString(R.string.sonos_clear_cache,
+                String.format(Locale.getDefault(), "%.1f MB", bytes / 1048576.0)));
+        return true;
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(final MenuItem item) {
+        if (item.getItemId() == MENU_CLEAR_CACHE) {
             final File[] files = cacheDir().listFiles();
             if (files != null) {
                 for (final File f : files) {
@@ -145,9 +176,34 @@ public final class SonosControlActivity extends AppCompatActivity {
                 }
             }
             Toast.makeText(this, R.string.sonos_cache_cleared, Toast.LENGTH_SHORT).show();
-            updateCacheButton();
-        });
-        updateCacheButton();
+            return true;
+        } else if (item.getItemId() == MENU_CACHE_LIMIT) {
+            showCacheLimitDialog();
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
+    }
+
+    private void showCacheLimitDialog() {
+        final long current = prefs.getLong(SonosPlayer.PREF_CACHE_MAX_MB,
+                SonosPlayer.DEFAULT_CACHE_MAX_MB);
+        final String[] labels = new String[CACHE_MB_CHOICES.length];
+        int checked = -1;
+        for (int i = 0; i < CACHE_MB_CHOICES.length; i++) {
+            labels[i] = CACHE_MB_CHOICES[i] >= 1024
+                    ? (CACHE_MB_CHOICES[i] / 1024) + " GB" : CACHE_MB_CHOICES[i] + " MB";
+            if (CACHE_MB_CHOICES[i] == current) {
+                checked = i;
+            }
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.sonos_cache_limit)
+                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
+                    prefs.edit().putLong(SonosPlayer.PREF_CACHE_MAX_MB,
+                            CACHE_MB_CHOICES[which]).apply();
+                    dialog.dismiss();
+                })
+                .show();
     }
 
     @Override
@@ -241,18 +297,6 @@ public final class SonosControlActivity extends AppCompatActivity {
 
     private File cacheDir() {
         return new File(getCacheDir(), "sonos");
-    }
-
-    private void updateCacheButton() {
-        long bytes = 0;
-        final File[] files = cacheDir().listFiles();
-        if (files != null) {
-            for (final File f : files) {
-                bytes += f.length();
-            }
-        }
-        clearCacheButton.setText(getString(R.string.sonos_clear_cache,
-                String.format(Locale.getDefault(), "%.1f MB", bytes / 1048576.0)));
     }
 
     private void run(final io.reactivex.rxjava3.functions.Action action) {

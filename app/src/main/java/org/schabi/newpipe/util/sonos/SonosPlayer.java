@@ -54,6 +54,9 @@ import us.shandian.giga.service.DownloadManagerService;
 public final class SonosPlayer {
     private static final String PREF_LAST_IP = "sonos_last_ip";
     private static final String PREF_LAST_NAME = "sonos_last_name";
+    /** Cache size cap in MB; set from the control screen's "Cache limit" menu. */
+    static final String PREF_CACHE_MAX_MB = "sonos_cache_max_mb";
+    static final long DEFAULT_CACHE_MAX_MB = 1024;
 
     private SonosPlayer() {
     }
@@ -181,7 +184,7 @@ public final class SonosPlayer {
             return;
         }
         try {
-            trimCache(file.getParentFile());
+            trimCache(appContext, file.getParentFile());
             //noinspection ResultOfMethodCallIgnored
             file.createNewFile();
             final StoredFileHelper storage = new StoredFileHelper(appContext,
@@ -206,25 +209,24 @@ public final class SonosPlayer {
 
     /**
      * Evicts the least-recently-played files (never currently-served ones) until
-     * the cache dir is back under the cap. Files otherwise persist across playbacks
-     * so replays and prev-skips are instant cache hits.
+     * the cache dir is back under the configured cap. Files otherwise persist across
+     * playbacks so replays and prev-skips are instant cache hits.
      */
-    // ponytail: fixed 1 GB cap, no setting; Android may evict the cache dir earlier anyway
-    private static final long MAX_CACHE_BYTES = 1024L * 1024 * 1024;
-
-    private static void trimCache(@Nullable final File dir) {
+    private static void trimCache(final Context appContext, @Nullable final File dir) {
         final File[] files = dir == null
                 ? null : dir.listFiles((d, name) -> !name.endsWith(".done"));
         if (files == null) {
             return;
         }
+        final long maxBytes = PreferenceManager.getDefaultSharedPreferences(appContext)
+                .getLong(PREF_CACHE_MAX_MB, DEFAULT_CACHE_MAX_MB) * 1048576L;
         long total = 0;
         for (final File f : files) {
             total += f.length();
         }
         Arrays.sort(files, Comparator.comparingLong(File::lastModified));
         for (final File f : files) {
-            if (total <= MAX_CACHE_BYTES) {
+            if (total <= maxBytes) {
                 break;
             }
             if (SonosStreamService.isServing(f)) {
