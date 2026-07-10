@@ -173,6 +173,12 @@ public final class SonosLocalPlayActivity extends AppCompatActivity {
         if (file != null && file.isFile()) {
             return new SonosQueuePlayer.LocalFileItem(Uri.fromFile(file), displayTitle);
         }
+        // Stale playlist (files renamed since it was written) — fuzzy-match
+        // within the playlist folder.
+        final File fuzzy = baseDir != null ? fuzzyFind(baseDir, fileName) : null;
+        if (fuzzy != null) {
+            return new SonosQueuePlayer.LocalFileItem(Uri.fromFile(fuzzy), displayTitle);
+        }
         // Path unresolvable (opaque file-manager URI, moved file, …) — find the
         // entry by filename in the media index instead.
         final Uri media = findInMediaStore(fileName, location);
@@ -181,6 +187,57 @@ public final class SonosLocalPlayActivity extends AppCompatActivity {
         }
         Log.w(TAG, "m3u entry not found: " + location);
         return null;
+    }
+
+    private static final java.util.regex.Pattern LEADING_DIGITS =
+            java.util.regex.Pattern.compile("^\\d+");
+
+    /**
+     * Rescues stale album playlists: first a normalized-name match
+     * ("01-Foo.Bar.mp3" ↔ "01 Foo Bar.mp3"), then a unique leading-track-number
+     * match. ponytail: heuristic — ambiguous track numbers are skipped, not guessed.
+     */
+    @Nullable
+    private static File fuzzyFind(final File dir, final String fileName) {
+        final File[] files = dir.listFiles();
+        if (files == null) {
+            return null;
+        }
+        final String target = normalize(fileName);
+        for (final File f : files) {
+            if (f.isFile() && normalize(f.getName()).equals(target)) {
+                return f;
+            }
+        }
+        final java.util.regex.Matcher entryNumber = LEADING_DIGITS.matcher(fileName);
+        if (!entryNumber.find()) {
+            return null;
+        }
+        File match = null;
+        for (final File f : files) {
+            if (!f.isFile() || !isAudioFileName(f.getName())) {
+                continue;
+            }
+            final java.util.regex.Matcher fileNumber = LEADING_DIGITS.matcher(f.getName());
+            if (fileNumber.find() && fileNumber.group().equals(entryNumber.group())) {
+                if (match != null) {
+                    return null; // ambiguous
+                }
+                match = f;
+            }
+        }
+        return match;
+    }
+
+    private static String normalize(final String s) {
+        return s.toLowerCase(Locale.US).replaceAll("[^a-z0-9]", "");
+    }
+
+    private static boolean isAudioFileName(final String name) {
+        final String lower = name.toLowerCase(Locale.US);
+        return lower.endsWith(".mp3") || lower.endsWith(".m4a") || lower.endsWith(".flac")
+                || lower.endsWith(".ogg") || lower.endsWith(".wav") || lower.endsWith(".aac")
+                || lower.endsWith(".wma");
     }
 
     /**
@@ -236,6 +293,50 @@ public final class SonosLocalPlayActivity extends AppCompatActivity {
             }
             if (docId != null && docId.startsWith("raw:")) {
                 return new File(docId.substring("raw:".length())).getParentFile();
+            }
+        } catch (final RuntimeException ignored) {
+        }
+        return mediaStorePlaylistDirectory();
+    }
+
+    /**
+     * Last resort for fully opaque URIs (MiXplorer's "515!" bookmark tokens):
+     * find the playlist file itself in the media index by name, preferring the
+     * row sharing the most trailing path segments with the URI.
+     */
+    @Nullable
+    private File mediaStorePlaylistDirectory() {
+        final String name = SonosPlayer.displayName(this, uri);
+        final List<String> segments = uri.getPathSegments();
+        try (Cursor cursor = getContentResolver().query(
+                MediaStore.Files.getContentUri("external"),
+                new String[]{MediaStore.MediaColumns.DATA},
+                MediaStore.MediaColumns.DISPLAY_NAME + " = ?",
+                new String[]{name}, null)) {
+            String best = null;
+            int bestScore = 0;
+            while (cursor != null && cursor.moveToNext()) {
+                final String data = cursor.getString(0);
+                if (data == null) {
+                    continue;
+                }
+                final String[] dataSegments = data.split("/");
+                int score = 0;
+                for (int i = 1; i <= Math.min(segments.size(), dataSegments.length); i++) {
+                    if (segments.get(segments.size() - i)
+                            .equals(dataSegments[dataSegments.length - i])) {
+                        score++;
+                    } else {
+                        break;
+                    }
+                }
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = data;
+                }
+            }
+            if (best != null) {
+                return new File(best).getParentFile();
             }
         } catch (final RuntimeException ignored) {
         }
