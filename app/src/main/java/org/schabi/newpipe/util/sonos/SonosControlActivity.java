@@ -134,8 +134,14 @@ public final class SonosControlActivity extends AppCompatActivity {
             final File[] files = cacheDir().listFiles();
             if (files != null) {
                 for (final File f : files) {
-                    //noinspection ResultOfMethodCallIgnored
-                    f.delete();
+                    // don't delete a file the speaker is currently streaming
+                    final File base = f.getName().endsWith(".done")
+                            ? new File(f.getPath().substring(0, f.getPath().length() - 5))
+                            : f;
+                    if (!SonosStreamService.isServing(base)) {
+                        //noinspection ResultOfMethodCallIgnored
+                        f.delete();
+                    }
                 }
             }
             Toast.makeText(this, R.string.sonos_cache_cleared, Toast.LENGTH_SHORT).show();

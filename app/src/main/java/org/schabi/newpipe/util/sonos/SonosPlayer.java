@@ -25,6 +25,7 @@ import org.schabi.newpipe.streams.io.StoredFileHelper;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -180,20 +181,7 @@ public final class SonosPlayer {
             return;
         }
         try {
-            final File[] stale = file.getParentFile() == null
-                    ? null : file.getParentFile().listFiles();
-            if (stale != null) {
-                for (final File f : stale) {
-                    // in queue mode the current/next track is still being served — keep it
-                    final File base = f.getName().endsWith(".done")
-                            ? new File(f.getPath().substring(0, f.getPath().length() - 5))
-                            : f;
-                    if (!SonosStreamService.isServing(base)) {
-                        //noinspection ResultOfMethodCallIgnored
-                        f.delete();
-                    }
-                }
-            }
+            trimCache(file.getParentFile());
             //noinspection ResultOfMethodCallIgnored
             file.createNewFile();
             final StoredFileHelper storage = new StoredFileHelper(appContext,
@@ -216,9 +204,45 @@ public final class SonosPlayer {
         }
     }
 
+    /**
+     * Evicts the least-recently-played files (never currently-served ones) until
+     * the cache dir is back under the cap. Files otherwise persist across playbacks
+     * so replays and prev-skips are instant cache hits.
+     */
+    // ponytail: fixed 1 GB cap, no setting; Android may evict the cache dir earlier anyway
+    private static final long MAX_CACHE_BYTES = 1024L * 1024 * 1024;
+
+    private static void trimCache(@Nullable final File dir) {
+        final File[] files = dir == null
+                ? null : dir.listFiles((d, name) -> !name.endsWith(".done"));
+        if (files == null) {
+            return;
+        }
+        long total = 0;
+        for (final File f : files) {
+            total += f.length();
+        }
+        Arrays.sort(files, Comparator.comparingLong(File::lastModified));
+        for (final File f : files) {
+            if (total <= MAX_CACHE_BYTES) {
+                break;
+            }
+            if (SonosStreamService.isServing(f)) {
+                continue;
+            }
+            total -= f.length();
+            //noinspection ResultOfMethodCallIgnored
+            f.delete();
+            //noinspection ResultOfMethodCallIgnored
+            new File(f.getPath() + ".done").delete();
+        }
+    }
+
     private static void serve(final Context appContext, final StreamInfo info, final File file,
                               final BiConsumer<String, String> onReady,
                               final Consumer<Throwable> onError) {
+        //noinspection ResultOfMethodCallIgnored
+        file.setLastModified(System.currentTimeMillis()); // LRU touch for trimCache
         try {
             onReady.accept(SonosStreamService.start(appContext, file, info.getName(),
                     info.getDuration()), "audio/mp4");

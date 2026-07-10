@@ -91,17 +91,12 @@ public final class SonosStreamService extends Service {
     }
 
     /**
-     * Stops serving the given URL's path and deletes its file (+ ".done" marker),
-     * unless another path still serves the same file. No-op for foreign URLs.
+     * Stops serving the given URL's path. The file stays in cache for replays;
+     * the size-capped LRU trim in SonosPlayer reclaims it eventually.
+     * No-op for foreign URLs.
      */
     public static void drop(final String url) {
-        final File file = FILES.remove(Uri.parse(url).getPath());
-        if (file != null && !FILES.containsValue(file)) {
-            //noinspection ResultOfMethodCallIgnored
-            file.delete();
-            //noinspection ResultOfMethodCallIgnored
-            new File(file.getPath() + ".done").delete();
-        }
+        FILES.remove(Uri.parse(url).getPath());
     }
 
     /** Stops the service (and with it, via onDestroy, all serving and cached files). */
@@ -275,15 +270,8 @@ public final class SonosStreamService extends Service {
         if (wifiLock != null && wifiLock.isHeld()) {
             wifiLock.release();
         }
-        // Files are only needed while the speaker can still fetch bytes, i.e. while
-        // this service runs. ponytail: drops the replay-same-video cache hit; replay
-        // re-downloads, which is acceptable.
-        for (final File file : FILES.values()) {
-            //noinspection ResultOfMethodCallIgnored
-            file.delete();
-            //noinspection ResultOfMethodCallIgnored
-            new File(file.getPath() + ".done").delete();
-        }
+        // Files stay in cache for instant replays; the size-capped LRU trim in
+        // SonosPlayer (and Android's cache-dir eviction) bounds disk usage.
         FILES.clear();
         super.onDestroy();
     }
