@@ -396,6 +396,9 @@ public final class SonosQueuePlayer {
         private Item wantedNext;
         private final Handler syncHandler = new Handler(Looper.getMainLooper());
         private int stoppedPolls;
+        /** True while a skip target is being prepared — a STOPPED poll then isn't
+         *  end-of-queue (the current track may end while the download runs). */
+        private boolean preparing;
         /** Bumped on skip; stale prepare callbacks (e.g. a superseded download) bail out. */
         private int generation;
         /** Bumped on every queue edit; the control screen rebuilds on change. */
@@ -467,10 +470,14 @@ public final class SonosQueuePlayer {
                 return;
             }
             generation++;
-            nextUrl = null;
-            nextItem = null;
+            if (nextUrl != null) {
+                // un-queue the speaker's next NOW — if the current track ends while
+                // the skip target downloads, it must not play the superseded track
+                clearSpeakerNext();
+            }
             wantedNext = null;
             stoppedPolls = 0;
+            preparing = true;
             final String oldUrl = currentUrl;
             prepare(index, false, (item, prepared) -> {
                 currentItem = item;
@@ -480,16 +487,17 @@ public final class SonosQueuePlayer {
                 soap(() -> device.playUri(prepared.url, prepared.title,
                         prepared.thumbnailUrl, prepared.durationSeconds,
                         prepared.mimeType), () -> {
+                    preparing = false;
                     if (oldUrl != null && !oldUrl.equals(prepared.url)) {
                         SonosStreamService.drop(oldUrl);
                     }
-                    // ponytail: the speaker may briefly keep the previously queued next
-                    // track until this overwrites it — harmless unless the new track
-                    // ends within the download time of its successor
                     queueNext(items.indexOf(item) + 1);
                 });
-            }, () -> Toast.makeText(appContext, R.string.sonos_no_compatible_stream,
-                    Toast.LENGTH_LONG).show());
+            }, () -> {
+                preparing = false;
+                Toast.makeText(appContext, R.string.sonos_no_compatible_stream,
+                        Toast.LENGTH_LONG).show();
+            });
         }
 
         void add(final Item item) {
@@ -547,17 +555,26 @@ public final class SonosQueuePlayer {
                 // last-write-wins on the speaker, self-heals on the next advance/skip
                 return;
             }
+            // Drop the stale queued next on the speaker RIGHT AWAY: its item may
+            // just have been deleted, and preparing the replacement can take a
+            // whole download — a track end in between would play the deleted one.
+            if (nextUrl != null) {
+                clearSpeakerNext();
+            }
             if (desired == null) {
                 wantedNext = null;
-                nextItem = null;
-                nextUrl = null;
-                // the speaker still has the old next queued — clear it, best-effort
-                disposables.add(Completable.fromAction(device::clearNext)
-                        .subscribeOn(Schedulers.io())
-                        .subscribe(() -> { }, throwable -> { }));
                 return;
             }
             queueNext(after);
+        }
+
+        /** Best-effort immediate un-queue of the speaker's next track. */
+        private void clearSpeakerNext() {
+            nextItem = null;
+            nextUrl = null;
+            disposables.add(Completable.fromAction(device::clearNext)
+                    .subscribeOn(Schedulers.io())
+                    .subscribe(() -> { }, throwable -> { }));
         }
 
         private void queueNext(final int fromIndex) {
@@ -612,6 +629,9 @@ public final class SonosQueuePlayer {
             }
             // two consecutive STOPPED polls = end of queue or user stop → tear down
             // (a single one could be a mid-advance race)
+            if (preparing) {
+                return; // mid-skip silence is expected, not end-of-queue
+            }
             if ("STOPPED".equals(state)) {
                 if (++stoppedPolls >= 2) {
                     teardown();
