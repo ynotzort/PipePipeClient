@@ -2,6 +2,7 @@ package org.schabi.newpipe.util.sonos;
 
 import android.content.SharedPreferences;
 import android.os.Bundle;
+import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.ListView;
@@ -43,6 +44,8 @@ public final class SonosControlActivity extends AppCompatActivity {
     private SeekBar positionBar;
     private SeekBar volumeBar;
     private ListView queueList;
+    private Button prevButton;
+    private Button nextButton;
     private Button clearCacheButton;
     private boolean draggingPosition;
     private boolean draggingVolume;
@@ -82,6 +85,12 @@ public final class SonosControlActivity extends AppCompatActivity {
         findViewById(R.id.sonos_btn_play).setOnClickListener(v -> run(device::play));
         findViewById(R.id.sonos_btn_pause).setOnClickListener(v -> run(device::pause));
         findViewById(R.id.sonos_btn_stop).setOnClickListener(v -> run(device::stop));
+        prevButton = findViewById(R.id.sonos_btn_prev);
+        nextButton = findViewById(R.id.sonos_btn_next);
+        prevButton.setOnClickListener(v -> SonosQueuePlayer.previous());
+        nextButton.setOnClickListener(v -> SonosQueuePlayer.next());
+        queueList.setOnItemClickListener((parent, view, position, id) ->
+                SonosQueuePlayer.skipTo(position));
 
         positionBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
@@ -198,6 +207,8 @@ public final class SonosControlActivity extends AppCompatActivity {
     private void updateQueue() {
         final List<String> titles = SonosQueuePlayer.queueTitles();
         final int index = SonosQueuePlayer.queueIndex();
+        prevButton.setVisibility(titles == null ? View.GONE : View.VISIBLE);
+        nextButton.setVisibility(titles == null ? View.GONE : View.VISIBLE);
         if (titles == null) {
             if (queueList.getAdapter() != null) {
                 queueList.setAdapter(null);

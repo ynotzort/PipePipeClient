@@ -63,6 +63,8 @@
 <string name="sonos_clear_cache">Clear cache (%s)</string>
 <string name="sonos_cache_cleared">Sonos cache cleared</string>
 <string name="sonos_play_playlist">Play on Sonos</string>
+<string name="sonos_previous">⏮</string>
+<string name="sonos_next">⏭</string>
 <string name="kore_not_found">Install missing Kore app?</string>
 <string name="crash_the_player">Crash the player</string>
 <string name="notification_scale_to_square_image_title">Crop thumbnail to 1:1 aspect ratio</string>

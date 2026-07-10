@@ -43,6 +43,15 @@
         android:orientation="horizontal">
 
         <Button
+            android:id="@+id/sonos_btn_prev"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/sonos_previous"
+            android:visibility="gone" />
+
+        <Button
             android:id="@+id/sonos_btn_play"
             style="?android:attr/borderlessButtonStyle"
             android:layout_width="0dp"
@@ -65,6 +74,15 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="@string/stop" />
+
+        <Button
+            android:id="@+id/sonos_btn_next"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/sonos_next"
+            android:visibility="gone" />
     </LinearLayout>
 
     <org.schabi.newpipe.views.NewPipeTextView

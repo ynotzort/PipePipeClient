@@ -80,6 +80,25 @@ public final class SonosQueuePlayer {
         return session == null ? -1 : session.currentIndex;
     }
 
+    /** Jumps the active queue session to the given item (no-op without a session). */
+    public static void skipTo(final int index) {
+        if (session != null) {
+            session.skipTo(index);
+        }
+    }
+
+    public static void next() {
+        if (session != null) {
+            session.skipTo(session.currentIndex + 1);
+        }
+    }
+
+    public static void previous() {
+        if (session != null) {
+            session.skipTo(session.currentIndex - 1);
+        }
+    }
+
     private interface OnPrepared {
         void ready(int index, StreamInfo info, String url, String mimeType);
     }
@@ -96,6 +115,8 @@ public final class SonosQueuePlayer {
         private StreamInfo nextInfo;
         private int nextIndex;
         private int stoppedPolls;
+        /** Bumped on skip; stale prepare callbacks (e.g. a superseded download) bail out. */
+        private int generation;
 
         Session(final Context appContext, final SonosDevice device,
                 final List<PlayQueueItem> items) {
@@ -132,12 +153,16 @@ public final class SonosQueuePlayer {
          */
         private void prepare(final int index, final boolean quiet, final OnPrepared onReady,
                              final Runnable onExhausted) {
+            final int gen = generation;
             if (index >= items.size()) {
                 onExhausted.run();
                 return;
             }
             final PlayQueueItem item = items.get(index);
             final Runnable skip = () -> {
+                if (gen != generation) {
+                    return;
+                }
                 Log.w(TAG, "skipping unplayable queue item: " + item.getUrl());
                 prepare(index + 1, quiet, onReady, onExhausted);
             };
@@ -145,10 +170,45 @@ public final class SonosQueuePlayer {
                     .getStreamInfo(item.getServiceId(), item.getUrl(), false)
                     .subscribeOn(Schedulers.io())
                     .observeOn(AndroidSchedulers.mainThread())
-                    .subscribe(info -> SonosPlayer.resolve(appContext, info, quiet,
-                                    (url, mimeType) -> onReady.ready(index, info, url, mimeType),
-                                    throwable -> skip.run()),
-                            throwable -> skip.run()));
+                    .subscribe(info -> {
+                        if (gen != generation) {
+                            return;
+                        }
+                        SonosPlayer.resolve(appContext, info, quiet,
+                                (url, mimeType) -> {
+                                    if (gen == generation) {
+                                        onReady.ready(index, info, url, mimeType);
+                                    }
+                                },
+                                throwable -> skip.run());
+                    }, throwable -> skip.run()));
+        }
+
+        /** Jumps to item {@code index}: resolve it, play it, re-queue the following one. */
+        void skipTo(final int index) {
+            if (index < 0 || index >= items.size()) {
+                return;
+            }
+            generation++;
+            nextUrl = null;
+            stoppedPolls = 0;
+            final String oldUrl = currentUrl;
+            prepare(index, false, (i, info, url, mimeType) -> {
+                currentIndex = i;
+                currentUrl = url;
+                SonosPlayer.persistLast(appContext, device, info);
+                soap(() -> device.playUri(url, info.getName(), info.getThumbnailUrl(),
+                        info.getDuration(), mimeType), () -> {
+                    if (oldUrl != null && !oldUrl.equals(url)) {
+                        SonosStreamService.drop(oldUrl);
+                    }
+                    // ponytail: the speaker may briefly keep the previously queued next
+                    // track until this overwrites it — harmless unless the new track
+                    // ends within the download time of its successor
+                    queueNext(i + 1);
+                });
+            }, () -> Toast.makeText(appContext, R.string.sonos_no_compatible_stream,
+                    Toast.LENGTH_LONG).show());
         }
 
         private void queueNext(final int fromIndex) {
@@ -213,10 +273,15 @@ public final class SonosQueuePlayer {
         }
 
         private void soap(final Action action, final Runnable onDone) {
+            final int gen = generation;
             disposables.add(Completable.fromAction(action)
                     .subscribeOn(Schedulers.io())
                     .observeOn(AndroidSchedulers.mainThread())
-                    .subscribe(onDone::run, throwable -> Toast.makeText(appContext,
+                    .subscribe(() -> {
+                        if (gen == generation) {
+                            onDone.run();
+                        }
+                    }, throwable -> Toast.makeText(appContext,
                             appContext.getString(R.string.sonos_error,
                                     String.valueOf(throwable.getMessage())),
                             Toast.LENGTH_LONG).show()));

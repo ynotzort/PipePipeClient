@@ -9,6 +9,7 @@ import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
@@ -232,8 +233,9 @@ public final class SonosPlayer {
         final Uri expectedUri = Uri.fromFile(file);
         final ServiceConnection connection = new ServiceConnection() {
             private DownloadManagerService.DownloadManagerBinder binder;
+            private boolean detached;
             private final Handler.Callback callback = msg -> {
-                if (!(msg.obj instanceof DownloadMission)) {
+                if (detached || !(msg.obj instanceof DownloadMission)) {
                     return false;
                 }
                 final DownloadMission mission = (DownloadMission) msg.obj;
@@ -261,10 +263,19 @@ public final class SonosPlayer {
             };
 
             private void detach() {
-                if (binder != null) {
-                    binder.removeMissionEventListener(callback);
+                if (detached) {
+                    return;
                 }
-                appContext.unbindService(this);
+                detached = true;
+                // posted: we're called from inside the download service's observer
+                // loop — removing the listener synchronously would throw a
+                // ConcurrentModificationException in its iteration
+                new Handler(Looper.getMainLooper()).post(() -> {
+                    if (binder != null) {
+                        binder.removeMissionEventListener(callback);
+                    }
+                    appContext.unbindService(this);
+                });
             }
 
             @Override
