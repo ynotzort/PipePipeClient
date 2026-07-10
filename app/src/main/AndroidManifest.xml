@@ -124,6 +124,11 @@
             android:launchMode="singleTask" />
 
         <activity
+            android:name=".util.sonos.SonosControlActivity"
+            android:label="@string/play_on_sonos_title"
+            android:launchMode="singleTask" />
+
+        <activity
             android:name=".settings.SettingsActivity"
             android:label="@string/settings" />
 

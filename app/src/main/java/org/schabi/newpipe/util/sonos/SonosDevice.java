@@ -73,6 +73,36 @@ public final class SonosDevice implements Serializable {
         return extractTag(body, "CurrentTransportState");
     }
 
+    public void seek(final long positionSeconds) throws IOException {
+        soap("AVTransport", AV_TRANSPORT_URN, "Seek",
+                "<Unit>REL_TIME</Unit><Target>" + formatTime(positionSeconds) + "</Target>");
+    }
+
+    /** @return {position, duration} in seconds (0 if unknown). */
+    public long[] getPositionInfo() throws IOException {
+        final String body = soap("AVTransport", AV_TRANSPORT_URN, "GetPositionInfo", "");
+        return new long[]{
+                parseTime(extractTag(body, "RelTime")),
+                parseTime(extractTag(body, "TrackDuration")),
+        };
+    }
+
+    public static String formatTime(final long seconds) {
+        return String.format(Locale.US, "%d:%02d:%02d",
+                seconds / 3600, (seconds / 60) % 60, seconds % 60);
+    }
+
+    private static long parseTime(final String time) {
+        try {
+            final String[] parts = time.split(":");
+            return Long.parseLong(parts[0]) * 3600
+                    + Long.parseLong(parts[1]) * 60
+                    + (long) Double.parseDouble(parts[2]);
+        } catch (final RuntimeException e) {
+            return 0;
+        }
+    }
+
     /** @return 0-100 */
     public int getVolume() throws IOException {
         final String body = soap("RenderingControl", RENDERING_URN, "GetVolume",
@@ -116,8 +146,7 @@ public final class SonosDevice implements Serializable {
     private static String buildDidl(final String uri, final String title,
                                     @Nullable final String thumbnailUrl,
                                     final long durationSeconds, final String mimeType) {
-        final String duration = String.format(Locale.US, "%d:%02d:%02d",
-                durationSeconds / 3600, (durationSeconds / 60) % 60, durationSeconds % 60);
+        final String duration = formatTime(durationSeconds);
         return "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" "
                 + "xmlns:dc=\"http://purl.org/dc/elements/1.1/\" "
                 + "xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">"

@@ -56,6 +56,12 @@
 <string name="sonos_volume">Volume</string>
 <string name="sonos_resume">Resume</string>
 <string name="sonos_downloading">Downloading audio for Sonos… playback starts when done</string>
+<string name="sonos_state_playing">Playing</string>
+<string name="sonos_state_paused">Paused</string>
+<string name="sonos_state_stopped">Stopped</string>
+<string name="sonos_no_speaker_yet">No Sonos speaker used yet — play something first</string>
+<string name="sonos_clear_cache">Clear cache (%s)</string>
+<string name="sonos_cache_cleared">Sonos cache cleared</string>
 <string name="kore_not_found">Install missing Kore app?</string>
 <string name="crash_the_player">Crash the player</string>
 <string name="notification_scale_to_square_image_title">Crop thumbnail to 1:1 aspect ratio</string>

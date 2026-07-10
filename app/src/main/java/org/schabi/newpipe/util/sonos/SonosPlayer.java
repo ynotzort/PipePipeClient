@@ -9,10 +9,6 @@ import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.IBinder;
-import android.widget.Button;
-import android.widget.LinearLayout;
-import android.widget.SeekBar;
-import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
@@ -259,6 +255,8 @@ public final class SonosPlayer {
         PreferenceManager.getDefaultSharedPreferences(appContext).edit()
                 .putString(PREF_LAST_IP, device.getIp())
                 .putString(PREF_LAST_NAME, device.getRoomName())
+                .putString("sonos_last_title", info.getName())
+                .putLong("sonos_last_duration", info.getDuration())
                 .apply();
         //noinspection ResultOfMethodCallIgnored
         Completable.fromAction(() -> device.playUri(url, info.getName(),
@@ -271,77 +269,10 @@ public final class SonosPlayer {
                                     device.getRoomName()),
                             Toast.LENGTH_SHORT).show();
                     if (isUsable(activity)) {
-                        showControls(activity, device);
+                        activity.startActivity(
+                                new Intent(activity, SonosControlActivity.class));
                     }
                 }, throwable -> showError(appContext, throwable));
-    }
-
-    public static void showControls(final Activity activity, final SonosDevice device) {
-        final Context appContext = activity.getApplicationContext();
-        final int pad = (int) (20 * activity.getResources().getDisplayMetrics().density);
-        final LinearLayout layout = new LinearLayout(activity);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(pad, pad / 2, pad, 0);
-
-        final LinearLayout buttons = new LinearLayout(activity);
-        buttons.setOrientation(LinearLayout.HORIZONTAL);
-        final LinearLayout.LayoutParams buttonParams =
-                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-        final Button resumeButton = new Button(activity);
-        resumeButton.setText(R.string.sonos_resume);
-        resumeButton.setOnClickListener(v -> runAction(appContext, device::play));
-        final Button pauseButton = new Button(activity);
-        pauseButton.setText(R.string.pause);
-        pauseButton.setOnClickListener(v -> runAction(appContext, device::pause));
-        final Button stopButton = new Button(activity);
-        stopButton.setText(R.string.stop);
-        stopButton.setOnClickListener(v -> runAction(appContext, device::stop));
-        buttons.addView(resumeButton, buttonParams);
-        buttons.addView(pauseButton, buttonParams);
-        buttons.addView(stopButton, buttonParams);
-        layout.addView(buttons);
-
-        final TextView volumeLabel = new TextView(activity);
-        volumeLabel.setText(R.string.sonos_volume);
-        layout.addView(volumeLabel);
-        final SeekBar volumeBar = new SeekBar(activity);
-        volumeBar.setMax(100);
-        layout.addView(volumeBar);
-        //noinspection ResultOfMethodCallIgnored
-        Single.fromCallable(device::getVolume)
-                .subscribeOn(Schedulers.io())
-                .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(volumeBar::setProgress, throwable -> { });
-        volumeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(final SeekBar seekBar, final int progress,
-                                          final boolean fromUser) {
-            }
-
-            @Override
-            public void onStartTrackingTouch(final SeekBar seekBar) {
-            }
-
-            @Override
-            public void onStopTrackingTouch(final SeekBar seekBar) {
-                runAction(appContext, () -> device.setVolume(seekBar.getProgress()));
-            }
-        });
-
-        new AlertDialog.Builder(activity)
-                .setTitle(device.getRoomName())
-                .setView(layout)
-                .setPositiveButton(android.R.string.ok, null)
-                .show();
-    }
-
-    private static void runAction(final Context appContext,
-                                  final io.reactivex.rxjava3.functions.Action action) {
-        //noinspection ResultOfMethodCallIgnored
-        Completable.fromAction(action)
-                .subscribeOn(Schedulers.io())
-                .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(() -> { }, throwable -> showError(appContext, throwable));
     }
 
     private static void showError(final Context appContext, final Throwable throwable) {

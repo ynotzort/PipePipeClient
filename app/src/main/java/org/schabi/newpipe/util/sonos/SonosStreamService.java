@@ -54,6 +54,11 @@ public final class SonosStreamService extends Service {
 
     /**
      * Starts serving the given file and returns the URL a Sonos speaker can fetch it from.
+     *
+     * <p>The URL path carries a fresh token every call: Sonos caches track metadata
+     * (including duration) keyed by resource URL, so reusing a fixed path makes each
+     * new track inherit the previous track's duration. The server ignores the path and
+     * always serves the current file — fine for our single-active-playback model.</p>
      */
     public static String start(final Context context, final File file, final String title,
                                final long durationSeconds) throws IOException {
@@ -63,7 +68,8 @@ public final class SonosStreamService extends Service {
                 .putExtra(EXTRA_TITLE, title)
                 .putExtra(EXTRA_DURATION, durationSeconds);
         context.startService(intent);
-        return "http://" + ip + ":" + PORT + "/audio.m4a";
+        // ponytail: path ignored by the server; token only defeats Sonos's per-URL cache
+        return "http://" + ip + ":" + PORT + "/audio-" + System.currentTimeMillis() + ".m4a";
     }
 
     private static String getLocalIpAddress() throws IOException {
@@ -111,11 +117,15 @@ public final class SonosStreamService extends Service {
         final PendingIntent stopIntent = PendingIntent.getService(this, 0,
                 new Intent(this, SonosStreamService.class).setAction(ACTION_STOP),
                 PendingIntent.FLAG_IMMUTABLE);
+        final PendingIntent openIntent = PendingIntent.getActivity(this, 0,
+                new Intent(this, SonosControlActivity.class),
+                PendingIntent.FLAG_IMMUTABLE);
         return new NotificationCompat.Builder(this, channelId)
                 .setContentTitle(getString(R.string.play_on_sonos_title))
                 .setContentText(title)
                 .setSmallIcon(R.drawable.ic_speaker)
                 .setOngoing(true)
+                .setContentIntent(openIntent)
                 .addAction(0, getString(R.string.stop), stopIntent)
                 .build();
     }
