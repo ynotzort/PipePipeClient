@@ -198,10 +198,13 @@ public final class SonosStreamService extends Service {
         final String title = PreferenceManager
                 .getDefaultSharedPreferences(this)
                 .getString(SonosPlayer.PREF_LAST_TITLE, "");
-        final String channelId = getString(R.string.notification_channel_id);
+        // dedicated channel so Sonos playback is configurable separately from
+        // the app's other (downloads etc.) notifications
+        final String channelId = "sonos_playback";
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getSystemService(NotificationManager.class).createNotificationChannel(
-                    new NotificationChannel(channelId, getString(R.string.play_on_sonos_title),
+                    new NotificationChannel(channelId,
+                            getString(R.string.sonos_notification_channel),
                             NotificationManager.IMPORTANCE_LOW));
         }
         final PendingIntent stopIntent = PendingIntent.getService(this, 0,

@@ -71,6 +71,7 @@
 <string name="sonos_added_to_queue">Added to Sonos queue</string>
 <string name="sonos_remove_playing_denied">Can\'t remove the playing track</string>
 <string name="sonos_removed_from_queue">Removed from queue</string>
+<string name="sonos_notification_channel">Sonos playback</string>
 <string name="kore_not_found">Install missing Kore app?</string>
 <string name="crash_the_player">Crash the player</string>
 <string name="notification_scale_to_square_image_title">Crop thumbnail to 1:1 aspect ratio</string>
