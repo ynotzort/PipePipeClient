@@ -1,0 +1,73 @@
+name: Build & release APK
+
+on:
+  push:
+    branches: [sonos]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PipePipeClient
+        uses: actions/checkout@v4
+        with:
+          path: PipePipeClient
+
+      # settings.gradle does includeBuild('../PipePipeExtractor') — the extractor
+      # must sit as a sibling. Pinned to the commit the branch is developed against.
+      - name: Checkout PipePipeExtractor (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: InfinityLoop1308/PipePipeExtractor
+          ref: 7d63aec351d58387661a787f3e36e8ad0673df09
+          path: PipePipeExtractor
+
+      # Same local-only fix as the dev setup: the extractor's toolchain download
+      # fails without the foojay resolver.
+      - name: Add foojay resolver to extractor settings
+        run: |
+          grep -q foojay PipePipeExtractor/settings.gradle || \
+            sed -i '1i plugins { id "org.gradle.toolchains.foojay-resolver-convention" version "1.0.0" }' \
+              PipePipeExtractor/settings.gradle
+
+      # Extractor emits Java 25 bytecode; older javac rejects it.
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - name: Set up Gradle (with build cache)
+        uses: gradle/actions/setup-gradle@v4
+
+      # Optional: repo secret DEBUG_KEYSTORE_BASE64 (base64 of ~/.android/debug.keystore)
+      # keeps the CI signature identical to local adb-installed builds, so installs
+      # update in place instead of demanding an uninstall.
+      - name: Restore debug keystore from secret (if configured)
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
+            mkdir -p ~/.android
+            echo "$DEBUG_KEYSTORE_BASE64" | base64 -d > ~/.android/debug.keystore
+            echo "Using debug keystore from secret"
+          fi
+
+      - name: Build debug APK
+        working-directory: PipePipeClient
+        run: ./gradlew assembleDebug
+
+      - name: Release (rolling sonos-latest)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: sonos-latest
+          name: Sonos build (latest)
+          prerelease: true
+          body: |
+            Rolling build of the `sonos` branch (${{ github.sha }}).
+            Debug-signed — intended for personal sideloading.
+          files: PipePipeClient/app/build/outputs/apk/debug/*arm64-v8a*.apk
