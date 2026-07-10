@@ -236,6 +236,15 @@ public final class SonosStreamService extends Service {
         if (wifiLock != null && wifiLock.isHeld()) {
             wifiLock.release();
         }
+        // The file is only needed while the speaker can still fetch bytes, i.e. while
+        // this service runs. ponytail: drops the replay-same-video cache hit; replay
+        // re-downloads, which is acceptable.
+        if (servedFile != null) {
+            //noinspection ResultOfMethodCallIgnored
+            servedFile.delete();
+            //noinspection ResultOfMethodCallIgnored
+            new File(servedFile.getPath() + ".done").delete();
+        }
         super.onDestroy();
     }
 

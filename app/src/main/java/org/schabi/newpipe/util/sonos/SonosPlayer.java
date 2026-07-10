@@ -204,6 +204,10 @@ public final class SonosPlayer {
                         new File(file.getPath() + ".done").createNewFile();
                     } catch (final IOException ignored) {
                     }
+                    // The Sonos download is an implementation detail: drop its row from
+                    // the downloads list (keeps the file — forgetMission nulls storage
+                    // before delete(); SonosStreamService removes the file on stop).
+                    binder.getDownloadManager().forgetMission(mission.storage);
                     detach();
                     onFinished.run();
                 } else if (msg.what == DownloadManagerService.MESSAGE_ERROR) {
