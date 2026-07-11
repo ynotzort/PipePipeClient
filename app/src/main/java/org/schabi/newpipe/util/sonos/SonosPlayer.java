@@ -25,6 +25,7 @@ import org.schabi.newpipe.extractor.MediaFormat;
 import org.schabi.newpipe.extractor.stream.AudioStream;
 import org.schabi.newpipe.extractor.stream.DeliveryMethod;
 import org.schabi.newpipe.extractor.stream.StreamInfo;
+import org.schabi.newpipe.extractor.stream.StreamSegment;
 import org.schabi.newpipe.streams.io.StoredFileHelper;
 import org.schabi.newpipe.util.StreamTypeUtil;
 
@@ -75,6 +76,8 @@ public final class SonosPlayer {
     static final String PREF_LAST_NAME = "sonos_last_name";
     static final String PREF_LAST_TITLE = "sonos_last_title";
     static final String PREF_LAST_DURATION = "sonos_last_duration";
+    /** Chapter markers of the current track, "seconds|title" per line; "" = none. */
+    static final String PREF_LAST_CHAPTERS = "sonos_last_chapters";
     /** True while the last-started playback is an endless live relay (no seek). */
     static final String PREF_LAST_LIVE = "sonos_last_live";
     /** Cache size cap in MB; set from the control screen's "Cache limit" menu. */
@@ -137,7 +140,7 @@ public final class SonosPlayer {
                         .subscribe(item -> serve(appContext, item.title, item.durationSeconds,
                                         item.mimeType, item.file,
                                         (url, mimeType) -> playUri(appContext, activity, device,
-                                                item.title, null, item.durationSeconds,
+                                                item.title, null, item.durationSeconds, "",
                                                 url, mimeType),
                                         throwable -> showError(appContext, throwable)),
                                 throwable -> showError(appContext, throwable)));
@@ -522,25 +525,44 @@ public final class SonosPlayer {
                 connection, Context.BIND_AUTO_CREATE);
     }
 
+    /**
+     * The stream's chapter markers (video-description timestamps) serialized for
+     * {@link #PREF_LAST_CHAPTERS}: one "seconds|title" line each, "" if none.
+     * The control screen renders them as a tap-to-seek chapter list.
+     */
+    static String chaptersOf(final StreamInfo info) {
+        final StringBuilder chapters = new StringBuilder();
+        for (final StreamSegment segment : info.getStreamSegments()) {
+            if (chapters.length() > 0) {
+                chapters.append('\n');
+            }
+            chapters.append(segment.getStartTimeSeconds()).append('|').append(
+                    segment.getTitle() == null ? "" : segment.getTitle().replace('\n', ' '));
+        }
+        return chapters.toString();
+    }
+
     /** Persists what the control screen shows on open: speaker + current track. */
     static void persistLast(final Context appContext, final SonosDevice device,
-                            final StreamInfo info) {
-        persistLast(appContext, device, info.getName(), info.getDuration());
+                            final String title, final long durationSeconds) {
+        persistLast(appContext, device, title, durationSeconds, "");
     }
 
     static void persistLast(final Context appContext, final SonosDevice device,
-                            final String title, final long durationSeconds) {
-        persistLast(appContext, device, title, durationSeconds, false);
+                            final String title, final long durationSeconds,
+                            final String chapters) {
+        persistLast(appContext, device, title, durationSeconds, chapters, false);
     }
 
     private static void persistLast(final Context appContext, final SonosDevice device,
                                     final String title, final long durationSeconds,
-                                    final boolean live) {
+                                    final String chapters, final boolean live) {
         PreferenceManager.getDefaultSharedPreferences(appContext).edit()
                 .putString(PREF_LAST_IP, device.getIp())
                 .putString(PREF_LAST_NAME, device.getRoomName())
                 .putString(PREF_LAST_TITLE, title)
                 .putLong(PREF_LAST_DURATION, durationSeconds)
+                .putString(PREF_LAST_CHAPTERS, chapters)
                 .putBoolean(PREF_LAST_LIVE, live)
                 .apply();
         SonosStreamService.refreshNotification();
@@ -550,15 +572,15 @@ public final class SonosPlayer {
                                 final SonosDevice device, final StreamInfo info,
                                 final String url, final String mimeType) {
         playUri(appContext, activity, device, info.getName(), info.getThumbnailUrl(),
-                info.getDuration(), url, mimeType);
+                info.getDuration(), chaptersOf(info), url, mimeType);
     }
 
     private static void playUri(final Context appContext, final Activity activity,
                                 final SonosDevice device, final String title,
                                 @Nullable final String thumbnailUrl,
-                                final long durationSeconds,
+                                final long durationSeconds, final String chapters,
                                 final String url, final String mimeType) {
-        persistLast(appContext, device, title, durationSeconds);
+        persistLast(appContext, device, title, durationSeconds, chapters);
         //noinspection ResultOfMethodCallIgnored
         Completable.fromAction(() -> device.playUri(url, title,
                         thumbnailUrl, durationSeconds, mimeType))
@@ -576,7 +598,7 @@ public final class SonosPlayer {
      */
     private static void playLive(final Context appContext, final Activity activity,
                                  final SonosDevice device, final StreamInfo info) {
-        persistLast(appContext, device, info.getName(), 0, true);
+        persistLast(appContext, device, info.getName(), 0, "", true);
         //noinspection ResultOfMethodCallIgnored
         Completable.fromAction(() -> device.playLiveUri(
                         SonosStreamService.startLive(appContext,

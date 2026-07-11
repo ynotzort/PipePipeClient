@@ -54,6 +54,7 @@
 <string name="sonos_playing_toast">Playing on %s</string>
 <string name="sonos_error">Sonos error: %s</string>
 <string name="sonos_volume">Volume</string>
+<string name="sonos_chapters">Chapters</string>
 <string name="sonos_resume">Resume</string>
 <string name="sonos_downloading">Downloading audio for Sonos… playback starts when done</string>
 <string name="sonos_state_playing">Playing</string>

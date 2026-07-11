@@ -76,14 +76,18 @@ public final class SonosQueuePlayer {
         final long durationSeconds;
         @Nullable
         final String thumbnailUrl;
+        /** Serialized chapter markers (see {@link SonosPlayer#chaptersOf}), "" if none. */
+        final String chapters;
 
         Prepared(final String url, final String mimeType, final String title,
-                 final long durationSeconds, @Nullable final String thumbnailUrl) {
+                 final long durationSeconds, @Nullable final String thumbnailUrl,
+                 final String chapters) {
             this.url = url;
             this.mimeType = mimeType;
             this.title = title;
             this.durationSeconds = durationSeconds;
             this.thumbnailUrl = thumbnailUrl;
+            this.chapters = chapters;
         }
     }
 
@@ -286,7 +290,8 @@ public final class SonosQueuePlayer {
                     .subscribe(info -> SonosPlayer.resolve(appContext, info, quiet,
                                     (url, mimeType) -> onReady.accept(new Prepared(url,
                                             mimeType, info.getName(), info.getDuration(),
-                                            info.getThumbnailUrl())),
+                                            info.getThumbnailUrl(),
+                                            SonosPlayer.chaptersOf(info))),
                                     onError::accept),
                             onError::accept);
         }
@@ -325,7 +330,7 @@ public final class SonosQueuePlayer {
                                     local.durationSeconds, local.mimeType, local.file,
                                     (url, mimeType) -> onReady.accept(new Prepared(url,
                                             mimeType, local.title, local.durationSeconds,
-                                            null)),
+                                            null, "")),
                                     onError::accept),
                             onError::accept);
         }
@@ -355,7 +360,7 @@ public final class SonosQueuePlayer {
         public Disposable prepare(final Context appContext, final boolean quiet,
                                   final Consumer<Prepared> onReady,
                                   final Consumer<Throwable> onError) {
-            onReady.accept(new Prepared(url, mimeFor(url), displayTitle, 0, null));
+            onReady.accept(new Prepared(url, mimeFor(url), displayTitle, 0, null, ""));
             return Disposable.disposed();
         }
 
@@ -415,7 +420,7 @@ public final class SonosQueuePlayer {
                 currentItem = item;
                 currentUrl = prepared.url;
                 SonosPlayer.persistLast(appContext, device, prepared.title,
-                        prepared.durationSeconds);
+                        prepared.durationSeconds, prepared.chapters);
                 soap(() -> device.playUri(prepared.url, prepared.title,
                         prepared.thumbnailUrl, prepared.durationSeconds,
                         prepared.mimeType), () -> {
@@ -483,7 +488,7 @@ public final class SonosQueuePlayer {
                 currentItem = item;
                 currentUrl = prepared.url;
                 SonosPlayer.persistLast(appContext, device, prepared.title,
-                        prepared.durationSeconds);
+                        prepared.durationSeconds, prepared.chapters);
                 soap(() -> device.playUri(prepared.url, prepared.title,
                         prepared.thumbnailUrl, prepared.durationSeconds,
                         prepared.mimeType), () -> {
@@ -622,7 +627,7 @@ public final class SonosQueuePlayer {
                 nextItem = null;
                 nextUrl = null;
                 SonosPlayer.persistLast(appContext, device, nextPrepared.title,
-                        nextPrepared.durationSeconds);
+                        nextPrepared.durationSeconds, nextPrepared.chapters);
                 queueNext(items.indexOf(currentItem) + 1);
                 stoppedPolls = 0;
                 return;

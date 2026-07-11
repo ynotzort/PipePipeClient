@@ -98,6 +98,14 @@
                 android:visibility="gone" />
         </LinearLayout>
 
+        <Button
+            android:id="@+id/sonos_btn_chapters"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/sonos_chapters"
+            android:visibility="gone" />
+
         <org.schabi.newpipe.views.NewPipeTextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

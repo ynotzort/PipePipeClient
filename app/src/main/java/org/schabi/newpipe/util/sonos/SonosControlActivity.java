@@ -66,6 +66,8 @@ public final class SonosControlActivity extends AppCompatActivity {
     private final QueueAdapter queueAdapter = new QueueAdapter();
     private Button prevButton;
     private Button nextButton;
+    private Button chaptersButton;
+    private String chapterData = "";
     private boolean draggingPosition;
     private boolean draggingVolume;
     private long knownDuration;
@@ -109,6 +111,8 @@ public final class SonosControlActivity extends AppCompatActivity {
         nextButton = findViewById(R.id.sonos_btn_next);
         prevButton.setOnClickListener(v -> SonosQueuePlayer.previous());
         nextButton.setOnClickListener(v -> SonosQueuePlayer.next());
+        chaptersButton = findViewById(R.id.sonos_btn_chapters);
+        chaptersButton.setOnClickListener(v -> showChaptersDialog());
         queueList.setLayoutManager(new LinearLayoutManager(this));
         queueList.setAdapter(queueAdapter);
         attachQueueTouchHelper();
@@ -252,6 +256,9 @@ public final class SonosControlActivity extends AppCompatActivity {
         knownDuration = prefs.getLong(SonosPlayer.PREF_LAST_DURATION, 0);
         final boolean live = prefs.getBoolean(SonosPlayer.PREF_LAST_LIVE, false);
         positionBar.setVisibility(live ? View.GONE : View.VISIBLE);
+        chapterData = prefs.getString(SonosPlayer.PREF_LAST_CHAPTERS, "");
+        chaptersButton.setVisibility(chapterData.isEmpty() || live
+                ? View.GONE : View.VISIBLE);
         updateQueue();
         switch (state) {
             case "PLAYING":
@@ -462,6 +469,22 @@ public final class SonosControlActivity extends AppCompatActivity {
         if (indexMoved) {
             queueList.scrollToPosition(Math.max(0, index - 1));
         }
+    }
+
+    /** Chapter list (from PREF_LAST_CHAPTERS, "seconds|title" lines): tap to seek. */
+    private void showChaptersDialog() {
+        final String[] lines = chapterData.split("\n");
+        final CharSequence[] labels = new CharSequence[lines.length];
+        final int[] starts = new int[lines.length];
+        for (int i = 0; i < lines.length; i++) {
+            final int separator = lines[i].indexOf('|');
+            starts[i] = Integer.parseInt(lines[i].substring(0, separator));
+            labels[i] = shortTime(starts[i]) + "  " + lines[i].substring(separator + 1);
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.sonos_chapters)
+                .setItems(labels, (dialog, which) -> run(() -> device.seek(starts[which])))
+                .show();
     }
 
     /** "3:45" for tracks under an hour, "1:03:45" above. */
