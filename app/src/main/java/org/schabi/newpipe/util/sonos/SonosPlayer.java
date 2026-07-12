@@ -565,6 +565,8 @@ public final class SonosPlayer {
                 .putString(PREF_LAST_CHAPTERS, chapters)
                 .putBoolean(PREF_LAST_LIVE, live)
                 .apply();
+        // A new track means the speaker is (about to be) playing.
+        SonosStreamService.updateTransportState("PLAYING");
         SonosStreamService.refreshNotification();
     }
 

@@ -57,6 +57,7 @@ public final class SonosStreamService extends Service {
     private static final String TAG = "SonosStreamService";
     public static final int PORT = 8987;
     private static final String ACTION_STOP = "org.schabi.newpipe.sonos.STOP";
+    private static final String ACTION_PLAY_PAUSE = "org.schabi.newpipe.sonos.PLAY_PAUSE";
     private static final String EXTRA_DURATION = "duration";
     private static final String EXTRA_LIVE = "live";
     private static final long LIVE_IDLE_STOP_MS = 1800 * 1000L;
@@ -75,6 +76,21 @@ public final class SonosStreamService extends Service {
 
     /** Running service instance, for notification refreshes on track change. */
     private static volatile SonosStreamService instance;
+
+    /**
+     * Last known speaker transport state, drives the notification's play/pause
+     * icon. Kept honest by playback starts, the notification toggle itself, and
+     * the control screen's 2 s poll — no polling in this service.
+     */
+    private static volatile String lastTransportState = "PLAYING";
+
+    /** Records the speaker's transport state; re-renders the notification on change. */
+    public static void updateTransportState(final String state) {
+        if (state != null && !state.equals(lastTransportState)) {
+            lastTransportState = state;
+            refreshNotification();
+        }
+    }
 
     private ServerSocket serverSocket;
     private WifiManager.WifiLock wifiLock;
@@ -173,6 +189,10 @@ public final class SonosStreamService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
+        if (ACTION_PLAY_PAUSE.equals(intent.getAction())) {
+            togglePlayPause();
+            return START_NOT_STICKY;
+        }
         final long duration = intent.getLongExtra(EXTRA_DURATION, 0);
 
         instance = this;
@@ -189,6 +209,33 @@ public final class SonosStreamService extends Service {
                 intent.getBooleanExtra(EXTRA_LIVE, false)
                         ? LIVE_IDLE_STOP_MS : (duration + 1800) * 1000L);
         return START_NOT_STICKY;
+    }
+
+    /**
+     * Notification play/pause: query the speaker's real state, then toggle —
+     * the cached state may be stale (someone paused via the Sonos app).
+     */
+    private void togglePlayPause() {
+        new Thread(() -> {
+            final String ip = PreferenceManager.getDefaultSharedPreferences(this)
+                    .getString(SonosPlayer.PREF_LAST_IP, null);
+            if (ip == null) {
+                return;
+            }
+            final SonosDevice device = new SonosDevice(ip, ip);
+            try {
+                if ("PLAYING".equals(device.getTransportState())) {
+                    device.pause();
+                    lastTransportState = "PAUSED_PLAYBACK";
+                } else {
+                    device.play();
+                    lastTransportState = "PLAYING";
+                }
+                refreshNotification();
+            } catch (final IOException e) {
+                Log.w(TAG, "notification play/pause failed", e);
+            }
+        }).start();
     }
 
     /**
@@ -212,16 +259,24 @@ public final class SonosStreamService extends Service {
         final PendingIntent stopIntent = PendingIntent.getService(this, 0,
                 new Intent(this, SonosStreamService.class).setAction(ACTION_STOP),
                 PendingIntent.FLAG_IMMUTABLE);
+        final PendingIntent playPauseIntent = PendingIntent.getService(this, 1,
+                new Intent(this, SonosStreamService.class).setAction(ACTION_PLAY_PAUSE),
+                PendingIntent.FLAG_IMMUTABLE);
         final PendingIntent openIntent = PendingIntent.getActivity(this, 0,
                 new Intent(this, SonosControlActivity.class),
                 PendingIntent.FLAG_IMMUTABLE);
+        final boolean playing = "PLAYING".equals(lastTransportState)
+                || "TRANSITIONING".equals(lastTransportState);
         return new NotificationCompat.Builder(this, channelId)
                 .setContentTitle(getString(R.string.play_on_sonos_title))
                 .setContentText(title)
                 .setSmallIcon(R.drawable.ic_speaker)
                 .setOngoing(true)
                 .setContentIntent(openIntent)
-                .addAction(0, getString(R.string.stop), stopIntent)
+                .addAction(playing ? R.drawable.ic_pause : R.drawable.ic_play_arrow,
+                        getString(playing ? R.string.pause : R.string.sonos_resume),
+                        playPauseIntent)
+                .addAction(R.drawable.exo_icon_stop, getString(R.string.stop), stopIntent)
                 .build();
     }
 

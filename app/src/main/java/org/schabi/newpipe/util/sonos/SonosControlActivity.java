@@ -12,6 +12,7 @@ import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.ImageButton;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -64,9 +65,11 @@ public final class SonosControlActivity extends AppCompatActivity {
     private RecyclerView queueList;
     private final List<String> queueRows = new ArrayList<>();
     private final QueueAdapter queueAdapter = new QueueAdapter();
-    private Button prevButton;
-    private Button nextButton;
+    private ImageButton prevButton;
+    private ImageButton nextButton;
+    private ImageButton playPauseButton;
     private Button chaptersButton;
+    private String lastState = "";
     private String chapterData = "";
     private boolean draggingPosition;
     private boolean draggingVolume;
@@ -104,8 +107,14 @@ public final class SonosControlActivity extends AppCompatActivity {
         volumeBar = findViewById(R.id.sonos_volume_bar);
         queueList = findViewById(R.id.sonos_queue_list);
 
-        findViewById(R.id.sonos_btn_play).setOnClickListener(v -> run(device::play));
-        findViewById(R.id.sonos_btn_pause).setOnClickListener(v -> run(device::pause));
+        playPauseButton = findViewById(R.id.sonos_btn_play_pause);
+        playPauseButton.setOnClickListener(v -> {
+            final boolean playing = "PLAYING".equals(lastState);
+            // Optimistic flip; the 2 s poll corrects it if the speaker disagrees.
+            playPauseButton.setImageResource(playing
+                    ? R.drawable.ic_play_arrow : R.drawable.ic_pause);
+            run(playing ? device::pause : device::play);
+        });
         findViewById(R.id.sonos_btn_stop).setOnClickListener(v -> run(device::stop));
         prevButton = findViewById(R.id.sonos_btn_prev);
         nextButton = findViewById(R.id.sonos_btn_next);
@@ -260,6 +269,11 @@ public final class SonosControlActivity extends AppCompatActivity {
         chaptersButton.setVisibility(chapterData.isEmpty() || live
                 ? View.GONE : View.VISIBLE);
         updateQueue();
+        lastState = state;
+        final boolean playing = "PLAYING".equals(state) || "TRANSITIONING".equals(state);
+        playPauseButton.setImageResource(playing ? R.drawable.ic_pause
+                : R.drawable.ic_play_arrow);
+        SonosStreamService.updateTransportState(state);
         switch (state) {
             case "PLAYING":
             case "TRANSITIONING":

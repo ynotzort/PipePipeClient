@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical">
@@ -53,49 +54,53 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
+            android:gravity="center"
             android:orientation="horizontal">
 
-            <Button
+            <androidx.appcompat.widget.AppCompatImageButton
                 android:id="@+id/sonos_btn_prev"
-                style="?android:attr/borderlessButtonStyle"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/sonos_previous"
-                android:visibility="gone" />
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginEnd="16dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/sonos_previous"
+                android:scaleType="fitCenter"
+                android:visibility="gone"
+                app:srcCompat="@drawable/exo_icon_previous"
+                app:tint="?android:textColorPrimary" />
 
-            <Button
-                android:id="@+id/sonos_btn_play"
-                style="?android:attr/borderlessButtonStyle"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/sonos_resume" />
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/sonos_btn_play_pause"
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:layout_marginEnd="16dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/sonos_resume"
+                android:scaleType="fitCenter"
+                app:srcCompat="@drawable/ic_pause"
+                app:tint="?android:textColorPrimary" />
 
-            <Button
-                android:id="@+id/sonos_btn_pause"
-                style="?android:attr/borderlessButtonStyle"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/pause" />
-
-            <Button
+            <androidx.appcompat.widget.AppCompatImageButton
                 android:id="@+id/sonos_btn_stop"
-                style="?android:attr/borderlessButtonStyle"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/stop" />
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/stop"
+                android:scaleType="fitCenter"
+                app:srcCompat="@drawable/exo_icon_stop"
+                app:tint="?android:textColorPrimary" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatImageButton
                 android:id="@+id/sonos_btn_next"
-                style="?android:attr/borderlessButtonStyle"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/sonos_next"
-                android:visibility="gone" />
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginStart="16dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/sonos_next"
+                android:scaleType="fitCenter"
+                android:visibility="gone"
+                app:srcCompat="@drawable/exo_icon_next"
+                app:tint="?android:textColorPrimary" />
         </LinearLayout>
 
         <Button
