@@ -155,11 +155,6 @@ public final class SonosStreamService extends Service {
         LIVE.remove(Uri.parse(url).getPath());
     }
 
-    /** Stops the service (and with it, via onDestroy, all serving and cached files). */
-    public static void shutdown(final Context context) {
-        context.stopService(new Intent(context, SonosStreamService.class));
-    }
-
     /** Re-renders the notification from the persisted current track (no-op if not running). */
     public static void refreshNotification() {
         final SonosStreamService service = instance;

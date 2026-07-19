@@ -514,7 +514,7 @@ public final class SonosControlActivity extends AppCompatActivity {
     }
 
     private File cacheDir() {
-        return new File(getCacheDir(), "sonos");
+        return SonosPlayer.cacheDir(this);
     }
 
     private void run(final io.reactivex.rxjava3.functions.Action action) {

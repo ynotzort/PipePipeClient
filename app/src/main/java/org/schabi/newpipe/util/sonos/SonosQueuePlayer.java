@@ -649,7 +649,12 @@ public final class SonosQueuePlayer {
         private void teardown() {
             generation++;
             disposables.clear();
-            SonosStreamService.shutdown(appContext);
+            // Deliberately NOT shutting down the stream service: after a stop the
+            // speaker keeps the track URI, and Play re-fetches it — killing the
+            // server here made play-after-stop silently do nothing. The service's
+            // own auto-stop timer (duration + slack) reclaims it.
+            // ponytail: play-after-stop still dies once that timer fires; re-serving
+            // the persisted last file from the control screen would fix that.
             if (session == this) {
                 session = null;
             }

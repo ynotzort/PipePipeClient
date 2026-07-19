@@ -191,9 +191,7 @@ public final class SonosPlayer {
             mime = "audio/mpeg";
         }
 
-        final File dir = new File(appContext.getCacheDir(), "sonos");
-        //noinspection ResultOfMethodCallIgnored
-        dir.mkdirs();
+        final File dir = cacheDir(appContext);
         trimCache(appContext, dir);
         // extension matters: the HTTP server derives its Content-Type from it
         final File file = new File(dir, "sonos-local-"
@@ -328,11 +326,22 @@ public final class SonosPlayer {
         return !activity.isFinishing() && !activity.isDestroyed();
     }
 
-    private static File cacheFile(final Context appContext, final StreamInfo info) {
-        final File dir = new File(appContext.getCacheDir(), "sonos");
+    /**
+     * The audio cache directory. Deliberately under filesDir, NOT cacheDir:
+     * Android evicts app cache dirs whenever storage runs low (observed live on a
+     * 99%-full phone — the cache was wiped between sessions, forcing constant
+     * redownloads). Our own size-capped LRU trim bounds it instead.
+     */
+    static File cacheDir(final Context context) {
+        final File dir = new File(context.getFilesDir(), "sonos");
         //noinspection ResultOfMethodCallIgnored
         dir.mkdirs();
-        return new File(dir, "sonos-" + Math.abs(info.getUrl().hashCode()) + ".m4a");
+        return dir;
+    }
+
+    private static File cacheFile(final Context appContext, final StreamInfo info) {
+        return new File(cacheDir(appContext),
+                "sonos-" + Math.abs(info.getUrl().hashCode()) + ".m4a");
     }
 
     private static void downloadAndServe(final Context appContext, final StreamInfo info,
