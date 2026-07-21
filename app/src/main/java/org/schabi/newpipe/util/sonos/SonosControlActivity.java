@@ -74,6 +74,7 @@ public final class SonosControlActivity extends AppCompatActivity {
     private boolean draggingPosition;
     private boolean draggingVolume;
     private long knownDuration;
+    private long lastPositionSeconds;
     private int shownQueueIndex = -2;
     private int shownQueueVersion = -2;
 
@@ -297,6 +298,7 @@ public final class SonosControlActivity extends AppCompatActivity {
             if (knownDuration <= 0) {
                 knownDuration = position[1];
             }
+            lastPositionSeconds = position[0];
             positionBar.setMax((int) Math.max(1, knownDuration));
             if (!draggingPosition) {
                 positionBar.setProgress((int) Math.min(position[0], knownDuration));
@@ -490,14 +492,21 @@ public final class SonosControlActivity extends AppCompatActivity {
         final String[] lines = chapterData.split("\n");
         final CharSequence[] labels = new CharSequence[lines.length];
         final int[] starts = new int[lines.length];
+        int current = 0;
         for (int i = 0; i < lines.length; i++) {
             final int separator = lines[i].indexOf('|');
             starts[i] = Integer.parseInt(lines[i].substring(0, separator));
             labels[i] = shortTime(starts[i]) + "  " + lines[i].substring(separator + 1);
+            if (starts[i] <= lastPositionSeconds) {
+                current = i;
+            }
         }
         new AlertDialog.Builder(this)
                 .setTitle(R.string.sonos_chapters)
-                .setItems(labels, (dialog, which) -> run(() -> device.seek(starts[which])))
+                .setSingleChoiceItems(labels, current, (dialog, which) -> {
+                    run(() -> device.seek(starts[which]));
+                    dialog.dismiss();
+                })
                 .show();
     }
 
