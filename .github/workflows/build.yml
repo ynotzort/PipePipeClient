@@ -18,12 +18,13 @@ jobs:
           path: PipePipeClient
 
       # settings.gradle does includeBuild('../PipePipeExtractor') — the extractor
-      # must sit as a sibling. Pinned to the commit the branch is developed against.
+      # must sit as a sibling. Tracks main, same as the local dev checklist
+      # ("extractor = origin/main"); no SHA to bump after each rebase.
       - name: Checkout PipePipeExtractor (sibling)
         uses: actions/checkout@v4
         with:
           repository: InfinityLoop1308/PipePipeExtractor
-          ref: 7d63aec351d58387661a787f3e36e8ad0673df09
+          ref: main
           path: PipePipeExtractor
 
       # Same local-only fix as the dev setup: the extractor's toolchain download
