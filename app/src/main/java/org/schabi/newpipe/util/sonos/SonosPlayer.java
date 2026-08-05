@@ -22,6 +22,7 @@ import androidx.preference.PreferenceManager;
 
 import org.schabi.newpipe.R;
 import org.schabi.newpipe.extractor.MediaFormat;
+import org.schabi.newpipe.extractor.ServiceList;
 import org.schabi.newpipe.extractor.stream.AudioStream;
 import org.schabi.newpipe.extractor.stream.DeliveryMethod;
 import org.schabi.newpipe.extractor.stream.StreamInfo;
@@ -56,6 +57,7 @@ import io.reactivex.rxjava3.schedulers.Schedulers;
 import us.shandian.giga.get.DownloadMission;
 import us.shandian.giga.get.HlsDownloadStreamHelper;
 import us.shandian.giga.get.MissionRecoveryInfo;
+import us.shandian.giga.postprocessing.Postprocessing;
 import us.shandian.giga.service.DownloadManagerService;
 import us.shandian.giga.service.MissionState;
 
@@ -64,9 +66,9 @@ import us.shandian.giga.service.MissionState;
  * detail screen and the share flow (RouterActivity).
  *
  * <p>Flow: pick speaker (last-used or discovery + dialog) → if the stream has a
- * direct progressive URL, hand it to the speaker; otherwise (YouTube SABR)
- * download the audio to cache via the app's download pipeline, then serve it to
- * the speaker from {@link SonosStreamService}. Everything after speaker
+ * direct URL the speaker can use (never YouTube, see {@code pickStream}), hand it
+ * over; otherwise download the audio to cache via the app's download pipeline,
+ * then serve it to the speaker from {@link SonosStreamService}. Everything after speaker
  * selection runs on the application context, so a transient caller (share
  * activity) may finish once {@code onSpeakerChosen} fires.</p>
  */
@@ -253,24 +255,38 @@ public final class SonosPlayer {
             onReady.accept(direct.getContent(), mimeType);
             return;
         }
-        final AudioStream sabr = pickStream(info, false);
-        if (sabr == null) {
+        final AudioStream downloadable = pickStream(info, false);
+        if (downloadable == null) {
             onError.accept(new IOException(
                     appContext.getString(R.string.sonos_no_compatible_stream)));
             return;
         }
-        downloadAndServe(appContext, info, sabr, quiet, onReady, onError);
+        downloadAndServe(appContext, info, downloadable, quiet, onReady, onError);
     }
 
+    /**
+     * The audio stream to use: {@code directUrlOnly} asks for one the speaker can
+     * fetch itself, otherwise for one we download and serve locally.
+     *
+     * <p>YouTube never qualifies as direct, even though the android_vr endpoint does
+     * hand out progressive googlevideo URLs: they are ~1100 characters and
+     * <b>Sonos truncates a resource URI at 1023 bytes</b>, which cuts the signature
+     * off and makes the speaker's fetch fail silently (found live 2026-08-05). They
+     * are also IP-bound and expire, so downloading is the honest path.</p>
+     */
     @Nullable
     private static AudioStream pickStream(final StreamInfo info, final boolean directUrlOnly) {
         return info.getAudioStreams().stream()
                 .filter(s -> directUrlOnly
                         ? s.isUrl() && s.getDeliveryMethod() == DeliveryMethod.PROGRESSIVE_HTTP
-                        : s.getDeliveryMethod() == DeliveryMethod.SABR)
+                                && info.getService() != ServiceList.YouTube
+                        : s.getDeliveryMethod() == DeliveryMethod.SABR
+                                || s.getDeliveryMethod() == DeliveryMethod.PROGRESSIVE_HTTP)
                 .filter(s -> s.getFormat() == MediaFormat.M4A || s.getFormat() == MediaFormat.MP3)
                 .max(Comparator.comparing((AudioStream s) -> s.getFormat() == MediaFormat.M4A)
-                        .thenComparingInt(AudioStream::getAverageBitrate))
+                        .thenComparingInt(AudioStream::getAverageBitrate)
+                        // tiebreak: a plain URL downloads without the SABR machinery
+                        .thenComparing(AudioStream::isUrl))
                 .orElse(null);
     }
 
@@ -345,7 +361,7 @@ public final class SonosPlayer {
     }
 
     private static void downloadAndServe(final Context appContext, final StreamInfo info,
-                                         final AudioStream sabrStream, final boolean quiet,
+                                         final AudioStream stream, final boolean quiet,
                                          final BiConsumer<String, String> onReady,
                                          final Consumer<Throwable> onError) {
         final File file = cacheFile(appContext, info);
@@ -361,19 +377,25 @@ public final class SonosPlayer {
             file.createNewFile(); // no-op if a partial download already exists
             final StoredFileHelper storage = new StoredFileHelper(appContext,
                     Uri.fromFile(file.getParentFile()), Uri.fromFile(file), "sonos");
+            // mirrors DownloadDialog's audio recipe: SABR muxes itself, a progressive
+            // M4A needs the DASH atoms stripped or the result is unplayable
+            final String postprocessing =
+                    stream.getDeliveryMethod() != DeliveryMethod.SABR
+                            && stream.getFormat() == MediaFormat.M4A
+                            ? Postprocessing.ALGORITHM_M4A_NO_DASH : null;
             awaitDownload(appContext, file, storage,
                     () -> serve(appContext, info, file, onReady, onError), onError, () -> {
                         DownloadManagerService.startMission(appContext,
-                                new String[]{sabrStream.getContent()}, storage, 'a', 1,
-                                info.getUrl(), null, null, 0,
+                                new String[]{stream.getContent()}, storage, 'a', 1,
+                                info.getUrl(), postprocessing, null, 0,
                                 new MissionRecoveryInfo[]{
-                                        new MissionRecoveryInfo(sabrStream)},
+                                        new MissionRecoveryInfo(stream)},
                                 HlsDownloadStreamHelper
-                                        .buildResourceDeliveryMethods(sabrStream, null),
+                                        .buildResourceDeliveryMethods(stream, null),
                                 HlsDownloadStreamHelper
-                                        .buildResourceManifestUrls(sabrStream, null),
+                                        .buildResourceManifestUrls(stream, null),
                                 HlsDownloadStreamHelper
-                                        .buildResourceIsUrls(sabrStream, null));
+                                        .buildResourceIsUrls(stream, null));
                     });
             if (!quiet) {
                 Toast.makeText(appContext, R.string.sonos_downloading, Toast.LENGTH_LONG)
